@@ -1,18 +1,130 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
+/* ============================================================
+   style.css — Wello Chat · Styles spécifiques
+   (Les utilitaires Tailwind sont chargés via CDN dans index.html)
+   ============================================================ */
 
-body { font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
+/* ─── FONTS ─────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
 
-/* Styles pour correspondre aux captures GitHub Pages */
-input::placeholder {
-    color: #cbd5e1;
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    font-weight: 800;
+/* ─── BASE ───────────────────────────────────────────────────── */
+body {
+    font-family: 'Inter', sans-serif;
 }
 
-.shadow-blue-100 {
-    shadow-color: rgba(0, 74, 173, 0.1);
+/* Cache la scrollbar (tous navigateurs) */
+::-webkit-scrollbar       { width: 0px; background: transparent; }
+::-webkit-scrollbar-thumb { background: transparent; }
+* { scrollbar-width: none; } /* Firefox */
+
+/* ─── COULEUR MARQUE ─────────────────────────────────────────── */
+.bg-juswell { background-color: #004aad; }
+.text-juswell { color: #004aad; }
+.border-juswell { border-color: #004aad; }
+
+/* ─── ANIMATIONS ─────────────────────────────────────────────── */
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Scrollbar invisible */
-::-webkit-scrollbar { display: none; }
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.4; }
+}
+
+/* Entrée douce des modales */
+[x-data] [x-show],
+[x-data] template + div {
+    animation: fadeInUp 0.2s ease-out;
+}
+
+/* ─── BULLES DE MESSAGES ─────────────────────────────────────── */
+.bubble-sent {
+    background-color: #004aad;
+    color: white;
+    border-radius: 1.25rem 1.25rem 0.25rem 1.25rem;
+}
+
+.bubble-received {
+    background-color: #ffffff;
+    color: #111827;
+    border-radius: 1.25rem 1.25rem 1.25rem 0.25rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+/* ─── INDICATEUR "CONNECTÉ" ──────────────────────────────────── */
+.status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    background-color: #22c55e;
+    border-radius: 50%;
+    animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* ─── INPUT FOCUS ────────────────────────────────────────────── */
+input:focus, select:focus, textarea:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.4); /* orange-500/40 */
+}
+
+/* ─── BOUTON ACTIF (feedback tactile mobile) ─────────────────── */
+button:active {
+    transform: scale(0.97);
+}
+
+/* ─── MODAL BACKDROP ─────────────────────────────────────────── */
+.modal-backdrop {
+    backdrop-filter: blur(4px);
+    background-color: rgba(0, 0, 0, 0.55);
+}
+
+/* ─── SIDEBAR ITEM ACTIF ─────────────────────────────────────── */
+.chat-item-active {
+    background-color: #eff6ff; /* blue-50 */
+    border-left: 3px solid #004aad;
+}
+
+/* ─── TOAST NOTIFICATION (futur usage) ──────────────────────── */
+.toast {
+    position: fixed;
+    bottom: 5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1f2937;
+    color: white;
+    padding: 0.75rem 1.5rem;
+    border-radius: 1rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    z-index: 999;
+    animation: fadeInUp 0.25s ease-out;
+}
+
+/* ─── LOADER SPINNER ─────────────────────────────────────────── */
+.spinner {
+    width: 20px;
+    height: 20px;
+    border: 3px solid rgba(255,255,255,0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    display: inline-block;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ─── RESPONSIVE — Ajustements mobile ───────────────────────── */
+@media (max-width: 640px) {
+    /* Zone de chat prend tout l'écran sur mobile */
+    .xl\:rounded-3xl {
+        border-radius: 0 !important;
+    }
+    
+    /* Padding bas pour éviter la nav fixe */
+    .pb-safe {
+        padding-bottom: calc(4rem + env(safe-area-inset-bottom));
+    }
+}
