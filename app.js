@@ -22,14 +22,14 @@ import {
     serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-// ─── CONFIG FIREBASE (À REMPLIR) ──────────────────────────────────────────────
+// ─── CONFIG FIREBASE ──────────────────────────────────────────────
 const firebaseConfig = {
-    apiKey:            "VOTRE_API_KEY",
-    authDomain:        "VOTRE_PROJECT_ID.firebaseapp.com",
-    projectId:         "VOTRE_PROJECT_ID",
-    storageBucket:     "VOTRE_PROJECT_ID.appspot.com",
-    messagingSenderId: "VOTRE_SENDER_ID",
-    appId:             "VOTRE_APP_ID"
+  apiKey: "AIzaSyC_Yhua_kHtW1iHVdPsdC0-p8dROmQx1hE",
+  authDomain: "wello-chat.firebaseapp.com",
+  projectId: "wello-chat",
+  storageBucket: "wello-chat.firebasestorage.app",
+  messagingSenderId: "823717850732",
+  appId: "1:823717850732:web:fff5401d7dbcdeb90cf249"
 };
 // ──────────────────────────────────────────────────────────────────────────────
 
