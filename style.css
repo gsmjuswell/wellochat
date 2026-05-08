@@ -1,37 +1,18 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
 
-body { 
-    font-family: 'Inter', sans-serif; 
-    overscroll-behavior: none;
-}
+body { font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
 
-.no-scrollbar::-webkit-scrollbar {
-    display: none;
-}
-
-.no-scrollbar {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
-}
-
-.group-card {
-    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.group-card:active {
-    transform: scale(0.95);
-    background-color: #f3f4f6;
-}
-
+/* Styles pour correspondre aux captures GitHub Pages */
 input::placeholder {
-    color: #9ca3af;
-    font-weight: 600;
-    text-transform: uppercase;
+    color: #cbd5e1;
     font-size: 10px;
     letter-spacing: 0.1em;
+    font-weight: 800;
 }
 
-/* Animation des modales */
-[x-show] {
-    transition: all 0.3s ease-out;
+.shadow-blue-100 {
+    shadow-color: rgba(0, 74, 173, 0.1);
 }
+
+/* Scrollbar invisible */
+::-webkit-scrollbar { display: none; }
