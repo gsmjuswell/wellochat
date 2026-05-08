@@ -2,24 +2,36 @@
 
 body { 
     font-family: 'Inter', sans-serif; 
+    overscroll-behavior: none;
 }
 
-/* Masquer la scrollbar */
-::-webkit-scrollbar { 
-    width: 0px; 
-    background: transparent; 
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
 }
 
-.bg-juswell { 
-    background-color: #004aad; 
+.no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
 }
 
-/* Animations simples */
-.fade-in {
-    animation: fadeIn 0.3s ease-in-out;
+.group-card {
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
+.group-card:active {
+    transform: scale(0.95);
+    background-color: #f3f4f6;
+}
+
+input::placeholder {
+    color: #9ca3af;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+}
+
+/* Animation des modales */
+[x-show] {
+    transition: all 0.3s ease-out;
 }
