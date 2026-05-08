@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Wello Chat by GSM Juswell</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="style.css">
+    
+    <script type="module" src="app.js"></script>
+    
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-gray-100 text-gray-900 antialiased" x-data="welloApp">
+
+    <template x-if="!isLoggedIn">
+        <div class="fixed inset-0 bg-white z-50 flex flex-col p-8 justify-center">
+            <div class="mb-12 text-center">
+                <h1 class="text-4xl font-black text-[#004aad] tracking-tighter">WELLO CHAT</h1>
+                <p class="text-[10px] font-bold text-orange-500 uppercase tracking-widest">Powered by GSM Juswell</p>
+            </div>
+            <div class="space-y-4">
+                <input type="tel" x-model="phoneInput" placeholder="Numéro de téléphone" class="w-full p-5 bg-gray-50 border-2 border-gray-100 rounded-2xl font-bold outline-none focus:border-[#004aad] transition">
+                <input type="password" x-model="passInput" placeholder="Code secret" class="w-full p-5 bg-gray-50 border-2 border-gray-100 rounded-2xl font-bold outline-none focus:border-[#004aad] transition">
+                <button @click="login()" class="w-full py-5 bg-[#004aad] text-white rounded-2xl font-black uppercase tracking-widest shadow-xl active:scale-95 transition">Se connecter</button>
+            </div>
+        </div>
+    </template>
+
+    <template x-if="isLoggedIn">
+        <div class="max-w-md mx-auto min-h-screen flex flex-col bg-white shadow-2xl relative">
+            <header class="p-6 flex justify-between items-center sticky top-0 bg-white/80 backdrop-blur-md z-40">
+                <div>
+                    <h2 class="text-2xl font-black text-[#004aad] tracking-tighter">Wello Chat</h2>
+                    <p class="text-[9px] font-bold text-gray-400 uppercase" x-text="isAdmin ? 'Espace Direction' : 'Espace Collaborateur'"></p>
+                </div>
+                <div class="flex items-center gap-3">
+                    <button @click="showSearch = !showSearch" class="p-3 bg-gray-50 rounded-xl"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg></button>
+                    <button @click="logout()" class="p-3 bg-red-50 text-red-500 rounded-xl"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg></button>
+                </div>
+            </header>
+
+            <main class="flex-1 overflow-y-auto px-6 pb-24">
+                <template x-for="group in groups" :key="group.id">
+                    <div @click="openChat(group)" class="flex items-center gap-4 p-4 mb-3 bg-gray-50 rounded-2xl cursor-pointer">
+                        <div class="w-12 h-12 bg-[#004aad] rounded-full flex items-center justify-center text-white font-bold" x-text="group.name[0]"></div>
+                        <div class="flex-1">
+                            <h3 class="font-bold text-sm" x-text="group.name"></h3>
+                            <p class="text-[11px] text-gray-500 truncate" x-text="group.lastMessage || 'Aucun message'"></p>
+                        </div>
+                    </div>
+                </template>
+            </main>
+        </div>
+    </template>
+
+</body>
+</html>
