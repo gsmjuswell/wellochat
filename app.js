@@ -2,12 +2,12 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebas
 import { getFirestore, collection, addDoc, query, where, onSnapshot, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyC_Yhua_kHtW1iHVdPsdC0-p8dROmQx1hE",
-  authDomain: "wello-chat.firebaseapp.com",
-  projectId: "wello-chat",
-  storageBucket: "wello-chat.firebasestorage.app",
-  messagingSenderId: "823717850732",
-  appId: "1:823717850732:web:fff5401d7dbcdeb90cf249"
+    apiKey: "VOTRE_API_KEY",
+    authDomain: "VOTRE_PROJET.firebaseapp.com",
+    projectId: "VOTRE_PROJET_ID",
+    storageBucket: "VOTRE_PROJET.appspot.com",
+    messagingSenderId: "VOTRE_SENDER_ID",
+    appId: "VOTRE_APP_ID"
 };
 
 const app = initializeApp(firebaseConfig);
