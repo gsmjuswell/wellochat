@@ -3,102 +3,69 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Wello Chat by GSM Juswell</title>
+    <title>Wello Chat - GSM Juswell</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="style.css">
     <script type="module" src="app.js"></script>
     <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
-<body class="bg-gray-100 text-gray-900 antialiased" x-data="welloApp">
+<body class="bg-gray-100" x-data="welloApp">
 
     <template x-if="!isLoggedIn">
-        <div class="fixed inset-0 bg-white z-50 flex flex-col p-8 justify-center items-center">
-            <div class="w-full max-w-sm">
-                <div class="mb-12 text-center">
-                    <img src="assets/logo.png" alt="GSM Juswell" class="w-24 h-24 mx-auto mb-6 object-contain">
-                    <h1 class="text-4xl font-black text-[#004aad] tracking-tighter italic">WELLO CHAT</h1>
-                    <p class="text-[10px] font-black text-orange-500 uppercase tracking-[0.3em]">Directeur & Collaborateurs</p>
-                </div>
-                <div class="space-y-4">
-                    <div class="relative">
-                        <input type="tel" x-model="phoneInput" placeholder="Numéro de téléphone" 
-                               class="w-full p-5 bg-gray-50 border-2 border-gray-100 rounded-3xl font-bold outline-none focus:border-[#004aad] transition-all">
-                    </div>
-                    <div class="relative">
-                        <input type="password" x-model="passInput" placeholder="Code secret" 
-                               class="w-full p-5 bg-gray-50 border-2 border-gray-100 rounded-3xl font-bold outline-none focus:border-[#004aad] transition-all">
-                    </div>
-                    <button @click="login()" 
-                            class="w-full py-5 bg-[#004aad] text-white rounded-3xl font-black uppercase tracking-widest shadow-[0_20px_50px_rgba(0,74,173,0.3)] active:scale-95 transition-all">
-                        Se connecter
-                    </button>
-                </div>
-                <p class="mt-12 text-center text-[10px] font-bold text-gray-400 uppercase tracking-widest">© 2026 GSM Juswell Service</p>
+        <div class="h-screen w-full flex flex-col items-center justify-center p-6 bg-white">
+            <img src="assets/logo.png" class="h-24 mb-6">
+            <h1 class="text-4xl font-black text-[#004aad] italic tracking-tighter">WELLO CHAT</h1>
+            <p class="text-[10px] font-bold text-orange-500 uppercase tracking-[0.3em] mb-12">Directeur & Collaborateurs</p>
+            
+            <div class="w-full max-w-sm space-y-4">
+                <input type="tel" x-model="phoneInput" placeholder="NUMÉRO DE TÉLÉPHONE" class="w-full p-6 bg-gray-50 rounded-[2rem] text-center font-bold text-gray-400 outline-none border border-transparent focus:border-blue-100">
+                <input type="password" x-model="passInput" placeholder="CODE SECRET" class="w-full p-6 bg-gray-50 rounded-[2rem] text-center font-bold text-gray-400 outline-none border border-transparent focus:border-blue-100">
+                <button @click="login()" class="w-full py-6 bg-[#004aad] text-white rounded-[2rem] font-black uppercase tracking-widest shadow-xl shadow-blue-100 active:scale-95 transition">Se connecter</button>
             </div>
+            <p class="mt-20 text-[10px] font-bold text-gray-300 uppercase tracking-widest">© 2026 GSM JUSWELL SERVICE</p>
         </div>
     </template>
 
     <template x-if="isLoggedIn">
-        <div class="max-w-md mx-auto min-h-screen flex flex-col bg-white shadow-2xl relative overflow-hidden">
-            
-            <header class="p-6 flex justify-between items-center sticky top-0 bg-white/80 backdrop-blur-md z-40 border-b border-gray-50">
+        <div class="max-w-md mx-auto min-h-screen bg-white flex flex-col relative">
+            <header class="p-6 flex justify-between items-center">
                 <div>
-                    <h2 class="text-2xl font-black text-[#004aad] tracking-tighter italic">Wello Chat</h2>
-                    <p class="text-[9px] font-black text-orange-500 uppercase tracking-widest" x-text="isAdmin ? 'Espace Direction' : 'Espace Collaborateur'"></p>
+                    <h2 class="text-2xl font-black text-[#004aad] italic">Wello Chat</h2>
+                    <p class="text-[9px] font-black text-orange-500 uppercase tracking-widest" x-text="isAdmin ? 'ESPACE DIRECTION' : 'ESPACE COLLABORATEUR'"></p>
                 </div>
-                <div class="flex items-center gap-3">
-                    <button @click="showSearch = !showSearch" class="p-3 bg-gray-50 rounded-2xl text-gray-400 hover:text-[#004aad] transition">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-                    </button>
-                    <div class="relative">
-                        <button @click="menuOpen = !menuOpen" class="w-10 h-10 bg-[#004aad]/10 rounded-2xl flex items-center justify-center">
-                            <div class="w-2 h-2 bg-[#004aad] rounded-full"></div>
-                        </button>
-                    </div>
+                <div class="flex gap-2">
+                    <button class="p-3 bg-gray-50 rounded-full text-gray-400"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg></button>
+                    <button @click="logout()" class="w-10 h-10 bg-blue-50 rounded-full flex items-center justify-center"><div class="w-2 h-2 bg-blue-600 rounded-full"></div></button>
                 </div>
             </header>
 
-            <div class="px-6 py-4 flex gap-2 overflow-x-auto no-scrollbar">
-                <button @click="tab = 'chats'" :class="tab === 'chats' ? 'bg-[#004aad] text-white' : 'bg-gray-50 text-gray-400'" class="px-6 py-3 rounded-2xl font-black text-[11px] uppercase tracking-widest transition-all">Chats</button>
-                <button @click="tab = 'clients'" :class="tab === 'clients' ? 'bg-[#004aad] text-white' : 'bg-gray-50 text-gray-400'" class="px-6 py-3 rounded-2xl font-black text-[11px] uppercase tracking-widest transition-all">Clients</button>
-                <button @click="tab = 'settings'" :class="tab === 'settings' ? 'bg-[#004aad] text-white' : 'bg-gray-50 text-gray-400'" class="px-6 py-3 rounded-2xl font-black text-[11px] uppercase tracking-widest transition-all">Admin</button>
-            </div>
+            <nav class="px-6 py-2 flex gap-2">
+                <button @click="tab = 'chats'" :class="tab === 'chats' ? 'bg-[#004aad] text-white' : 'bg-gray-100 text-gray-400'" class="flex-1 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition">Chats</button>
+                <button @click="tab = 'clients'" :class="tab === 'clients' ? 'bg-[#004aad] text-white' : 'bg-gray-100 text-gray-400'" class="flex-1 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition">Clients</button>
+                <button @click="tab = 'admin'" :class="tab === 'admin' ? 'bg-[#004aad] text-white' : 'bg-gray-100 text-gray-400'" class="flex-1 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition">Admin</button>
+            </nav>
 
-            <main class="flex-1 overflow-y-auto px-6 pb-32">
+            <main class="flex-1 p-6">
                 <div x-show="tab === 'chats'" class="space-y-4">
                     <template x-for="group in groups" :key="group.id">
-                        <div @click="openChat(group)" class="group-card flex items-center gap-4 p-5 bg-gray-50 rounded-[2.5rem] border-2 border-transparent hover:border-[#004aad]/10 transition-all cursor-pointer">
-                            <div class="w-14 h-14 bg-gradient-to-br from-[#004aad] to-blue-600 rounded-2xl flex items-center justify-center text-white text-xl font-black shadow-lg shadow-blue-200" x-text="group.name[0]"></div>
+                        <div class="flex items-center gap-4 p-4 bg-gray-50 rounded-3xl">
+                            <div class="w-12 h-12 bg-[#004aad] rounded-2xl flex items-center justify-center text-white font-black" x-text="group.name[0]"></div>
                             <div class="flex-1">
-                                <div class="flex justify-between items-start mb-1">
-                                    <h3 class="font-black text-gray-800 text-sm italic" x-text="group.name"></h3>
-                                    <span class="text-[9px] font-bold text-gray-400" x-text="group.time"></span>
-                                </div>
-                                <p class="text-[11px] font-bold text-gray-500 line-clamp-1" x-text="group.lastMessage"></p>
+                                <h3 class="font-bold text-sm" x-text="group.name"></h3>
+                                <p class="text-[10px] text-gray-400 font-bold uppercase" x-text="group.lastMessage"></p>
                             </div>
                         </div>
                     </template>
                 </div>
-
-                <div x-show="tab === 'clients'" class="bg-gray-50 p-6 rounded-[2.5rem]">
-                    <h3 class="text-xs font-black uppercase tracking-widest text-[#004aad] mb-6">Inviter un Client</h3>
-                    <div class="space-y-4">
-                        <select x-model="inviteRole" class="w-full p-4 bg-white rounded-2xl font-bold text-sm outline-none border-2 border-gray-100">
-                            <option value="client">Client</option>
-                            <option value="partenaire">Partenaire</option>
-                        </select>
-                        <input type="tel" x-model="invitePhone" placeholder="Numéro du client" class="w-full p-4 bg-white rounded-2xl font-bold text-sm outline-none border-2 border-gray-100">
-                        <button @click="generateLink()" class="w-full py-4 bg-orange-500 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-lg shadow-orange-200">Générer le lien d'accès</button>
-                    </div>
-                </div>
             </main>
 
-            <template x-if="isAdmin && tab === 'chats'">
-                <button @click="showGroupModal = true" class="fixed bottom-10 right-10 w-16 h-16 bg-[#004aad] text-white rounded-3xl shadow-[0_20px_50px_rgba(0,74,173,0.4)] flex items-center justify-center active:scale-90 transition-all z-50">
-                    <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
+            <template x-if="isAdmin">
+                <button @click="showModal = true" class="fixed bottom-10 right-10 w-16 h-16 bg-[#004aad] text-white rounded-3xl shadow-2xl shadow-blue-200 flex items-center justify-center active:scale-90 transition">
+                    <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="4" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
                 </button>
             </template>
         </div>
     </template>
+
 </body>
 </html>
