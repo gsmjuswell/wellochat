@@ -16,7 +16,7 @@
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 
 <!-- PWA Manifest -->
-<link rel="manifest" href="/site.webmanifest">
+<link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#004aad">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Wello Chat">
@@ -24,7 +24,7 @@
     <!-- Firebase SDK compat -->
     <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-storage-compat.js"></script>
+    <!-- firebase-storage supprimé : upload géré par Cloudinary -->
 
     <script>
       const firebaseConfig = {
@@ -36,8 +36,7 @@
   appId: "1:823717850732:web:fff5401d7dbcdeb90cf249"
 };
         firebase.initializeApp(firebaseConfig);
-        const db      = firebase.firestore();
-        const storage = firebase.storage();
+        const db = firebase.firestore();
     </script>
 
     <script>
@@ -62,6 +61,43 @@
             if(parts.length===1) return parts[0].charAt(0).toUpperCase();
             return (parts[0].charAt(0)+parts[parts.length-1].charAt(0)).toUpperCase();
         }
+        // ══════════════════════════════════════════════════
+        //  CLOUDINARY — Upload sans Firebase Storage
+        //  Cloud name : dajyqtsei  |  Preset : Wello Chat
+        // ══════════════════════════════════════════════════
+        const CLOUDINARY_CLOUD = 'dajyqtsei';
+        const CLOUDINARY_PRESET = 'wello_chat';
+
+        async function uploadToCloudinary(file, onProgress) {
+            var formData = new FormData();
+            formData.append('file', file);
+            formData.append('upload_preset', CLOUDINARY_PRESET);
+            formData.append('folder', 'wello-chat');
+
+            return new Promise(function(resolve, reject) {
+                var xhr = new XMLHttpRequest();
+                var resourceType = file.type.startsWith('video/') ? 'video'
+                    : file.type.startsWith('audio/') ? 'video'  // Cloudinary gère audio via /video/
+                    : 'auto';
+                xhr.open('POST',
+                    'https://api.cloudinary.com/v1_1/' + CLOUDINARY_CLOUD + '/' + resourceType + '/upload');
+                xhr.upload.onprogress = function(e) {
+                    if (e.lengthComputable && onProgress)
+                        onProgress(Math.round(e.loaded / e.total * 100));
+                };
+                xhr.onload = function() {
+                    if (xhr.status === 200) {
+                        var data = JSON.parse(xhr.responseText);
+                        resolve(data.secure_url);
+                    } else {
+                        reject(new Error('Cloudinary error ' + xhr.status));
+                    }
+                };
+                xhr.onerror = function() { reject(new Error('Réseau indisponible')); };
+                xhr.send(formData);
+            });
+        }
+
         function humanSize(bytes) {
             if(bytes<1024) return bytes+'o';
             if(bytes<1048576) return (bytes/1024).toFixed(1)+'Ko';
@@ -317,15 +353,18 @@
             async uploadVoice(stream){
                 stream.getTracks().forEach(t=>t.stop());
                 var blob=new Blob(this.recChunks,{type:'audio/webm'});
-                var path='media/'+this.getConvId()+'/voice_'+Date.now()+'.webm';
-                var ref=storage.ref(path);
-                await ref.put(blob);
-                var url=await ref.getDownloadURL();
-                await db.collection('messages').doc(this.getConvId()).collection('msgs').add({
-                    type:'voice', url:url, duration:0,
-                    senderId:this.phoneInput, senderName:this.userProfile.name,
-                    timestamp:firebase.firestore.FieldValue.serverTimestamp()
-                });
+                var file=new File([blob],'voice_'+Date.now()+'.webm',{type:'audio/webm'});
+                try{
+                    var self=this;
+                    this.uploadProgress=1;
+                    var url=await uploadToCloudinary(file,function(p){self.uploadProgress=p;});
+                    await db.collection('messages').doc(this.getConvId()).collection('msgs').add({
+                        type:'voice', url:url, duration:0,
+                        senderId:this.phoneInput, senderName:this.userProfile.name,
+                        timestamp:firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                }catch(e){console.error(e);alert('Erreur envoi vocal.');}
+                finally{this.uploadProgress=0;}
             },
 
             // ══════════════════════════════════════════════
@@ -341,15 +380,8 @@
                 if(!file) return;
                 this.uploadProgress=1;
                 try{
-                    var ext=file.name.split('.').pop();
-                    var path='media/'+this.getConvId()+'/'+Date.now()+'.'+ext;
-                    var ref=storage.ref(path);
-                    var task=ref.put(file);
-                    task.on('state_changed',snap=>{
-                        this.uploadProgress=Math.round(snap.bytesTransferred/snap.totalBytes*100);
-                    });
-                    await task;
-                    var url=await ref.getDownloadURL();
+                    var self=this;
+                    var url=await uploadToCloudinary(file,function(p){self.uploadProgress=p;});
                     var mtype='file';
                     if(file.type.startsWith('image/')) mtype='image';
                     else if(file.type.startsWith('video/')) mtype='video';
