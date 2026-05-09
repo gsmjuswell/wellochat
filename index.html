@@ -16,7 +16,7 @@
         //  CONFIG FIREBASE — Remplace les valeurs ci-dessous
         //  Firebase Console > Paramètres > Tes applications
         // ══════════════════════════════════════════════════════
-       const firebaseConfig = {
+        const firebaseConfig = {
   apiKey: "AIzaSyC_Yhua_kHtW1iHVdPsdC0-p8dROmQx1hE",
   authDomain: "wello-chat.firebaseapp.com",
   projectId: "wello-chat",
@@ -77,10 +77,15 @@
                 showInviteModal: false,
                 showManageMembers: false,
 
-                inviteRole: 'client',
+                // Formulaire invitation complet (DG remplit tout)
+                inviteNom: '',
+                invitePrenom: '',
                 invitePhone: '',
-                inviteProject: '',
+                inviteRole: 'client',
+                inviteGroupId: '',     // groupe existant sélectionné
                 generatedLink: '',
+                inviteLoading: false,
+                inviteStep: 1,         // 1 = formulaire, 2 = lien généré
 
                 newGroupName: '',
                 selectedMembers: [],
@@ -204,28 +209,108 @@
                     } catch(err) { console.error('[Wello] updateGroupMembers:', err); alert('Erreur mise à jour.'); }
                 },
 
+                // ─────────────────────────────────────────────
+                //  GENERATE LINK — Nouvelle logique complète :
+                //  1. Crée le document dans "users" (le compte)
+                //  2. Ajoute le numéro dans les membres du groupe
+                //  3. Enregistre l'invitation dans "invitations"
+                //  4. Génère le lien (l'invité n'a qu'à cliquer)
+                // ─────────────────────────────────────────────
                 async generateLink() {
-                    if (!this.invitePhone) return alert('Veuillez entrer un numéro');
+                    if (!this.invitePhone.trim()) return alert('Le numéro de téléphone est requis.');
+                    if (!this.inviteNom.trim())   return alert('Le nom est requis.');
+                    if (!this.invitePrenom.trim()) return alert('Le prénom est requis.');
+
+                    this.inviteLoading = true;
                     try {
+                        var fullName = (this.invitePrenom.trim() + ' ' + this.inviteNom.trim());
+                        var phone    = this.invitePhone.trim();
+
+                        // 1. Vérifier si l'utilisateur existe déjà
+                        var existing = await db.collection('users')
+                            .where('phone_number', '==', phone).get();
+
+                        if (existing.empty) {
+                            // Créer le compte utilisateur dans Firestore
+                            await db.collection('users').add({
+                                name:         fullName,
+                                phone_number: phone,
+                                role:         this.inviteRole,
+                                poste:        '',
+                                societe:      '',
+                                projet_contrat: this.inviteGroupId
+                                    ? (this.groupsList.find(function(g){ return g.id === this.inviteGroupId; }, this) || {}).name || ''
+                                    : '',
+                                created_at: firebase.firestore.FieldValue.serverTimestamp()
+                            });
+                        }
+
+                        // 2. Ajouter au groupe sélectionné (si un groupe est choisi)
+                        if (this.inviteGroupId) {
+                            var groupRef  = db.collection('groups').doc(this.inviteGroupId);
+                            var groupSnap = await groupRef.get();
+                            if (groupSnap.exists) {
+                                var currentMembers = groupSnap.data().members || [];
+                                if (!currentMembers.includes(phone)) {
+                                    currentMembers.push(phone);
+                                    await groupRef.update({ members: currentMembers });
+                                    // Mettre à jour la liste locale
+                                    var localGroup = this.groupsList.find(function(g){ return g.id === groupSnap.id; });
+                                    if (localGroup) localGroup.members = currentMembers;
+                                }
+                            }
+                        }
+
+                        // 3. Enregistrer l'invitation
                         var token = generateToken(64);
                         await db.collection('invitations').doc(token).set({
-                            phone_number: this.invitePhone,
-                            role: this.inviteRole,
-                            projet_contrat: this.inviteProject,
-                            token: token,
-                            used: false,
-                            created_at: firebase.firestore.FieldValue.serverTimestamp()
+                            phone_number:  phone,
+                            nom:           this.inviteNom.trim(),
+                            prenom:        this.invitePrenom.trim(),
+                            role:          this.inviteRole,
+                            group_id:      this.inviteGroupId || '',
+                            token:         token,
+                            used:          false,
+                            created_at:    firebase.firestore.FieldValue.serverTimestamp()
                         });
+
+                        // 4. Construire le lien
                         this.generatedLink = window.location.origin + window.location.pathname + '?invite=' + token;
-                    } catch(err) { console.error('[Wello] generateLink:', err); alert('Erreur génération lien.'); }
+                        this.inviteStep = 2;
+
+                        // Rafraîchir la liste des utilisateurs affichée dans la sidebar
+                        await this.loadAllUsers();
+
+                    } catch(err) {
+                        console.error('[Wello] generateLink:', err);
+                        alert('Erreur : ' + err.message);
+                    } finally {
+                        this.inviteLoading = false;
+                    }
                 },
 
+                // Réinitialise le formulaire d'invitation
+                resetInviteModal() {
+                    this.inviteNom = ''; this.invitePrenom = '';
+                    this.invitePhone = ''; this.inviteRole = 'client';
+                    this.inviteGroupId = ''; this.generatedLink = '';
+                    this.inviteStep = 1; this.showInviteModal = false;
+                },
+
+                // ─────────────────────────────────────────────
+                //  HANDLE INVITE TOKEN (URL ?invite=xxx)
+                //  L'invité arrive sur le lien → son numéro est
+                //  pré-rempli → il clique Accéder → connecté
+                // ─────────────────────────────────────────────
                 async handleInviteToken(token) {
                     try {
                         var d = await db.collection('invitations').doc(token).get();
-                        if (!d.exists || d.data().used) { alert('Lien invalide ou déjà utilisé.'); return; }
-                        this.phoneInput = d.data().phone_number;
-                        alert('Bienvenue ! Projet : ' + d.data().projet_contrat + '\nConnectez-vous avec votre numéro.');
+                        if (!d.exists) { alert('Lien d\'invitation invalide.'); return; }
+                        var inv = d.data();
+                        // Pré-remplir le numéro — l'utilisateur clique juste "Accéder"
+                        this.phoneInput = inv.phone_number;
+                        // Nettoyer l'URL pour éviter une ré-utilisation accidentelle
+                        window.history.replaceState({}, document.title, window.location.pathname);
                     } catch(err) { console.error('[Wello] handleInviteToken:', err); }
                 },
 
@@ -526,24 +611,109 @@
 
 <template x-if="showInviteModal">
     <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-        <div class="bg-white w-full max-w-md rounded-[40px] p-8 shadow-2xl">
-            <h3 class="text-2xl font-black text-[#004aad] mb-6 uppercase tracking-tighter">Nouvel Accès</h3>
-            <div class="space-y-4">
-                <select x-model="inviteRole" class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold text-gray-700 outline-none">
-                    <option value="client">Client</option>
-                    <option value="partenaire">Partenaire</option>
-                    <option value="personnel">Personnel</option>
-                </select>
-                <input type="tel" x-model="invitePhone" placeholder="Numéro du client" class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold outline-none">
-                <input type="text" x-model="inviteProject" placeholder="Nom du Projet / Société" class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold outline-none">
-                <button @click="generateLink()" class="w-full py-4 bg-[#004aad] text-white rounded-2xl font-black uppercase tracking-widest shadow-lg active:scale-95 transition">Générer le lien</button>
-                <div x-show="generatedLink" class="mt-4 p-4 bg-orange-50 rounded-2xl border border-orange-100">
-                    <p class="text-[9px] font-black text-orange-600 uppercase mb-2 text-center">Lien généré :</p>
-                    <input id="gen-link" type="text" readonly :value="generatedLink" class="bg-white p-2 rounded-lg text-[10px] font-mono font-bold w-full text-center border-none">
-                    <button @click="copyLink()" class="mt-2 w-full py-2 bg-orange-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-orange-600 transition">Copier le lien</button>
+        <div class="bg-white w-full max-w-md rounded-[40px] p-8 shadow-2xl max-h-[92vh] overflow-y-auto">
+
+            <!-- ÉTAPE 1 : Formulaire -->
+            <div x-show="inviteStep === 1">
+                <div class="flex items-center justify-between mb-6">
+                    <h3 class="text-xl font-black text-[#004aad] uppercase tracking-tighter">Nouvel Accès</h3>
+                    <button @click="resetInviteModal()" class="text-gray-300 hover:text-gray-500 text-2xl leading-none">&times;</button>
                 </div>
-                <button @click="showInviteModal = false; generatedLink = ''" class="w-full py-2 text-gray-400 text-[10px] font-black uppercase mt-2 tracking-widest">Fermer</button>
+
+                <div class="space-y-3">
+                    <!-- Prénom -->
+                    <div>
+                        <label class="text-[9px] font-black text-gray-400 uppercase block mb-1">Prénom</label>
+                        <input type="text" x-model="invitePrenom" placeholder="Ex: Jean"
+                               class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-[#004aad] transition">
+                    </div>
+
+                    <!-- Nom -->
+                    <div>
+                        <label class="text-[9px] font-black text-gray-400 uppercase block mb-1">Nom</label>
+                        <input type="text" x-model="inviteNom" placeholder="Ex: Dupont"
+                               class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-[#004aad] transition">
+                    </div>
+
+                    <!-- Téléphone -->
+                    <div>
+                        <label class="text-[9px] font-black text-gray-400 uppercase block mb-1">Numéro de téléphone</label>
+                        <input type="tel" x-model="invitePhone" placeholder="Ex: 99000000"
+                               class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-[#004aad] transition">
+                    </div>
+
+                    <!-- Rôle -->
+                    <div>
+                        <label class="text-[9px] font-black text-gray-400 uppercase block mb-1">Type de profil</label>
+                        <div class="grid grid-cols-2 gap-2">
+                            <template x-for="r in ['client','partenaire','personnel','collaborateur']" :key="r">
+                                <button @click="inviteRole = r"
+                                        :class="inviteRole === r
+                                            ? 'bg-[#004aad] text-white border-[#004aad]'
+                                            : 'bg-gray-50 text-gray-500 border-gray-100'"
+                                        class="py-3 rounded-xl font-black text-[10px] uppercase border-2 transition capitalize"
+                                        x-text="r">
+                                </button>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Groupe -->
+                    <div>
+                        <label class="text-[9px] font-black text-gray-400 uppercase block mb-1">Affecter à un groupe <span class="text-gray-300">(optionnel)</span></label>
+                        <select x-model="inviteGroupId"
+                                class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold text-gray-700 outline-none">
+                            <option value="">— Aucun groupe —</option>
+                            <template x-for="g in groupsList" :key="g.id">
+                                <option :value="g.id" x-text="g.name"></option>
+                            </template>
+                        </select>
+                    </div>
+
+                    <!-- Bouton générer -->
+                    <button @click="generateLink()" :disabled="inviteLoading"
+                            class="w-full py-4 bg-orange-500 text-white rounded-2xl font-black uppercase tracking-widest shadow-lg active:scale-95 transition hover:bg-orange-600 disabled:opacity-60 mt-2">
+                        <span x-show="!inviteLoading">Créer le compte &amp; Générer le lien</span>
+                        <span x-show="inviteLoading">Création en cours...</span>
+                    </button>
+                </div>
             </div>
+
+            <!-- ÉTAPE 2 : Lien généré -->
+            <div x-show="inviteStep === 2" class="text-center">
+                <div class="mb-6">
+                    <div class="h-16 w-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                    </div>
+                    <h3 class="text-xl font-black text-gray-900 mb-1">Compte créé !</h3>
+                    <p class="text-sm text-gray-400">
+                        <span class="font-bold text-[#004aad]" x-text="invitePrenom + ' ' + inviteNom"></span>
+                        a été ajouté(e) comme
+                        <span class="font-bold text-orange-500" x-text="inviteRole"></span>
+                    </p>
+                    <template x-if="inviteGroupId">
+                        <p class="text-[10px] text-gray-400 mt-1">
+                            Groupe : <span class="font-bold text-gray-600" x-text="(groupsList.find(function(g){return g.id===inviteGroupId})||{}).name||''"></span>
+                        </p>
+                    </template>
+                </div>
+
+                <div class="bg-orange-50 rounded-2xl p-4 border border-orange-100 mb-4">
+                    <p class="text-[9px] font-black text-orange-600 uppercase mb-2">Lien à envoyer :</p>
+                    <input id="gen-link" type="text" readonly :value="generatedLink"
+                           class="bg-white p-3 rounded-xl text-[10px] font-mono font-bold w-full text-center border border-orange-100 outline-none">
+                </div>
+
+                <button @click="copyLink()"
+                        class="w-full py-4 bg-[#004aad] text-white rounded-2xl font-black uppercase tracking-widest shadow-lg active:scale-95 transition hover:opacity-90 mb-3">
+                    Copier le lien
+                </button>
+                <button @click="resetInviteModal()"
+                        class="w-full py-3 text-gray-400 text-[10px] font-black uppercase tracking-widest hover:text-gray-600 transition">
+                    Créer un autre accès
+                </button>
+            </div>
+
         </div>
     </div>
 </template>
