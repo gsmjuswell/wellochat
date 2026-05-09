@@ -5,329 +5,548 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Wello Chat by GSM Juswell</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <link rel="stylesheet" href="style.css">
+
+    <!-- Firebase SDK compat (pas de module ES = pas de conflit Alpine) -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
+    <script>
+        // ══════════════════════════════════════════════════════
+        //  CONFIG FIREBASE — Remplace les valeurs ci-dessous
+        //  Firebase Console > Paramètres > Tes applications
+        // ══════════════════════════════════════════════════════
+       const firebaseConfig = {
+  apiKey: "AIzaSyC_Yhua_kHtW1iHVdPsdC0-p8dROmQx1hE",
+  authDomain: "wello-chat.firebaseapp.com",
+  projectId: "wello-chat",
+  storageBucket: "wello-chat.firebasestorage.app",
+  messagingSenderId: "823717850732",
+  appId: "1:823717850732:web:fff5401d7dbcdeb90cf249"
+};
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+    </script>
+
+    <script>
+        // ══════════════════════════════════════════════════════
+        //  UTILITAIRES
+        // ══════════════════════════════════════════════════════
+        function generateToken(length) {
+            length = length || 64;
+            var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+            var result = "";
+            for (var i = 0; i < length; i++) {
+                result += chars[Math.floor(Math.random() * chars.length)];
+            }
+            return result;
+        }
+
+        function formatTimestamp(ts) {
+            if (!ts) return '';
+            var date = ts.toDate ? ts.toDate() : new Date(ts);
+            return date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+        }
+
+        // ══════════════════════════════════════════════════════
+        //  welloApp() défini AVANT Alpine.js (defer)
+        //  Cela résout l'erreur "welloApp is not defined"
+        // ══════════════════════════════════════════════════════
+        function welloApp() {
+            return {
+                isLoggedIn: false,
+                isAdmin: false,
+                tab: 'chats',
+                showSearch: false,
+                searchQuery: '',
+                menuOpen: false,
+                loginLoading: false,
+                loginError: '',
+
+                phoneInput: '',
+                passInput: '',
+                dgPhone: '92239333',
+                dgCode: 'Juswell',
+
+                activeChat: null,
+                messages: [],
+                newMessage: '',
+                unsubMessages: null,
+
+                showGroupModal: false,
+                showInviteModal: false,
+                showManageMembers: false,
+
+                inviteRole: 'client',
+                invitePhone: '',
+                inviteProject: '',
+                generatedLink: '',
+
+                newGroupName: '',
+                selectedMembers: [],
+
+                userProfile: { name: '', role: '' },
+                usersList: [],
+                groupsList: [],
+
+                get filteredUsers() {
+                    if (!this.searchQuery) return this.usersList;
+                    var q = this.searchQuery.toLowerCase();
+                    return this.usersList.filter(function(u) {
+                        return u.name.toLowerCase().includes(q);
+                    });
+                },
+
+                get filteredGroups() {
+                    var self = this;
+                    if (this.isAdmin) return this.groupsList;
+                    return this.groupsList.filter(function(g) {
+                        return Array.isArray(g.members) && g.members.includes(self.phoneInput);
+                    });
+                },
+
+                init() {
+                    var self = this;
+                    this.$watch('activeChat', function(chat) {
+                        if (self.unsubMessages) { self.unsubMessages(); self.unsubMessages = null; }
+                        self.messages = [];
+                        if (chat) self.listenMessages();
+                    });
+                    var token = new URLSearchParams(window.location.search).get('invite');
+                    if (token) this.handleInviteToken(token);
+                },
+
+                async login() {
+                    if (!this.phoneInput.trim()) return;
+                    this.loginError = '';
+                    this.loginLoading = true;
+                    try {
+                        if (this.phoneInput === this.dgPhone) {
+                            if (this.passInput !== this.dgCode) {
+                                this.loginError = 'Code DG incorrect.';
+                                this.loginLoading = false;
+                                return;
+                            }
+                            this.isAdmin = true;
+                            this.isLoggedIn = true;
+                            this.userProfile = { name: 'Directeur Général', role: 'Administrateur' };
+                            await this.loadAllUsers();
+                            await this.loadGroups();
+                        } else {
+                            var snap = await db.collection('users')
+                                .where('phone_number', '==', this.phoneInput).get();
+                            if (snap.empty) {
+                                this.loginError = 'Numéro non reconnu.';
+                                this.loginLoading = false;
+                                return;
+                            }
+                            var data = snap.docs[0].data();
+                            this.isAdmin = false;
+                            this.isLoggedIn = true;
+                            this.userProfile = { name: data.name, role: data.role };
+                            this.usersList = [{
+                                id: 'dg', name: 'Directeur Général (GSM)',
+                                phone: this.dgPhone, last_message: 'Support disponible'
+                            }];
+                            await this.loadGroups();
+                        }
+                    } catch(err) {
+                        console.error('[Wello] login:', err);
+                        this.loginError = 'Erreur de connexion. Réessayez.';
+                    } finally {
+                        this.loginLoading = false;
+                    }
+                },
+
+                async loadAllUsers() {
+                    try {
+                        var snap = await db.collection('users')
+                            .where('phone_number', '!=', this.dgPhone).get();
+                        this.usersList = snap.docs.map(function(d) {
+                            return Object.assign({ id: d.id, phone: d.data().phone_number }, d.data());
+                        });
+                    } catch(err) { console.error('[Wello] loadAllUsers:', err); }
+                },
+
+                async loadGroups() {
+                    try {
+                        var snap = await db.collection('groups').get();
+                        this.groupsList = snap.docs.map(function(d) {
+                            return Object.assign({ id: d.id, members: [] }, d.data());
+                        });
+                    } catch(err) { console.error('[Wello] loadGroups:', err); }
+                },
+
+                async createGroup() {
+                    if (!this.newGroupName.trim()) return alert('Nom requis');
+                    try {
+                        var ref = await db.collection('groups').add({
+                            name: this.newGroupName.trim(),
+                            members: this.selectedMembers,
+                            created_by: this.dgPhone,
+                            created_at: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        this.groupsList.push({ id: ref.id, name: this.newGroupName.trim(), members: this.selectedMembers.slice() });
+                        this.newGroupName = '';
+                        this.selectedMembers = [];
+                        this.showGroupModal = false;
+                    } catch(err) { console.error('[Wello] createGroup:', err); alert('Erreur création groupe.'); }
+                },
+
+                async updateGroupMembers() {
+                    if (!this.activeChat || !this.activeChat.id) return;
+                    try {
+                        await db.collection('groups').doc(this.activeChat.id)
+                            .update({ members: this.activeChat.members });
+                        this.showManageMembers = false;
+                        await this.loadGroups();
+                        alert('Membres mis à jour !');
+                    } catch(err) { console.error('[Wello] updateGroupMembers:', err); alert('Erreur mise à jour.'); }
+                },
+
+                async generateLink() {
+                    if (!this.invitePhone) return alert('Veuillez entrer un numéro');
+                    try {
+                        var token = generateToken(64);
+                        await db.collection('invitations').doc(token).set({
+                            phone_number: this.invitePhone,
+                            role: this.inviteRole,
+                            projet_contrat: this.inviteProject,
+                            token: token,
+                            used: false,
+                            created_at: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        this.generatedLink = window.location.origin + window.location.pathname + '?invite=' + token;
+                    } catch(err) { console.error('[Wello] generateLink:', err); alert('Erreur génération lien.'); }
+                },
+
+                async handleInviteToken(token) {
+                    try {
+                        var d = await db.collection('invitations').doc(token).get();
+                        if (!d.exists || d.data().used) { alert('Lien invalide ou déjà utilisé.'); return; }
+                        this.phoneInput = d.data().phone_number;
+                        alert('Bienvenue ! Projet : ' + d.data().projet_contrat + '\nConnectez-vous avec votre numéro.');
+                    } catch(err) { console.error('[Wello] handleInviteToken:', err); }
+                },
+
+                async sendMessage() {
+                    var text = this.newMessage.trim();
+                    if (!text || !this.activeChat) return;
+                    try {
+                        await db.collection('messages').doc(this.getConvId())
+                            .collection('msgs').add({
+                                text: text,
+                                senderId: this.phoneInput,
+                                senderName: this.userProfile.name,
+                                timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                            });
+                        this.newMessage = '';
+                    } catch(err) { console.error('[Wello] sendMessage:', err); }
+                },
+
+                listenMessages() {
+                    var self = this;
+                    this.unsubMessages = db.collection('messages').doc(this.getConvId())
+                        .collection('msgs').orderBy('timestamp', 'asc')
+                        .onSnapshot(function(snap) {
+                            self.messages = snap.docs.map(function(d) { return Object.assign({ id: d.id }, d.data()); });
+                            self.$nextTick(function() {
+                                var el = document.getElementById('msgs');
+                                if (el) el.scrollTop = el.scrollHeight;
+                            });
+                        });
+                },
+
+                getConvId() {
+                    if (this.activeChat.members !== undefined) return 'group_' + this.activeChat.id;
+                    return [this.phoneInput, this.activeChat.phone || this.activeChat.id].sort().join('_');
+                },
+
+                async copyLink() {
+                    try {
+                        await navigator.clipboard.writeText(this.generatedLink);
+                        alert('Lien copié !');
+                    } catch(e) {
+                        var el = document.getElementById('gen-link');
+                        if (el) { el.select(); document.execCommand('copy'); alert('Lien copié !'); }
+                    }
+                },
+
+                formatTime(ts) { return formatTimestamp(ts); },
+
+                logout() {
+                    if (this.unsubMessages) this.unsubMessages();
+                    this.isLoggedIn = false; this.isAdmin = false;
+                    this.phoneInput = ''; this.passInput = '';
+                    this.usersList = []; this.groupsList = [];
+                    this.activeChat = null; this.messages = [];
+                    this.userProfile = { name: '', role: '' };
+                }
+            };
+        }
+    </script>
+
+    <!-- Alpine APRES welloApp() -->
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
-<body class="bg-gray-100 text-gray-900 antialiased" 
-      x-data="welloApp()"
-      x-init="init()">
+<body class="bg-gray-100 text-gray-900 antialiased" x-data="welloApp()" x-init="init()">
 
-    <!-- 1. ÉCRAN DE CONNEXION -->
-    <template x-if="!isLoggedIn">
-        <div class="h-screen w-full flex items-center justify-center p-6 bg-juswell">
-            <div class="bg-white w-full max-w-md rounded-[40px] p-10 shadow-2xl text-center">
-                <img src="Logo_Wello_Chat_2.png" class="h-14 mx-auto mb-6" alt="Wello Chat">
-                <h2 class="text-3xl font-black text-[#004aad] mb-2 uppercase tracking-tighter">Wello Chat</h2>
-                <p class="text-gray-400 text-sm mb-8 font-medium">Authentification GSM Juswell</p>
-                <div class="space-y-4">
-                    <input type="tel" x-model="phoneInput" placeholder="Numéro de téléphone"
-                           @keyup.enter="login()"
-                           class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold text-center outline-none focus:ring-2 focus:ring-orange-500 transition">
-                    <div x-show="phoneInput === dgPhone">
-                        <input type="password" x-model="passInput" placeholder="Code secret DG"
-                               @keyup.enter="login()"
-                               class="w-full p-4 bg-orange-50 border-2 border-orange-200 rounded-2xl font-bold text-center outline-none mb-4">
-                    </div>
-                    <div x-show="loginError" class="text-red-500 text-sm font-bold py-2" x-text="loginError"></div>
-                    <button @click="login()" 
-                            :disabled="loginLoading"
-                            class="w-full py-5 bg-orange-500 text-white rounded-2xl font-black uppercase shadow-lg active:scale-95 transition hover:bg-orange-600 disabled:opacity-60">
-                        <span x-show="!loginLoading">Accéder</span>
-                        <span x-show="loginLoading">Connexion...</span>
-                    </button>
+<!-- 1. CONNEXION -->
+<template x-if="!isLoggedIn">
+    <div class="h-screen w-full flex items-center justify-center p-6 bg-juswell">
+        <div class="bg-white w-full max-w-md rounded-[40px] p-10 shadow-2xl text-center">
+            <img src="Logo_Wello_Chat_2.png" class="h-14 mx-auto mb-6" alt="Wello Chat">
+            <h2 class="text-3xl font-black text-[#004aad] mb-2 uppercase tracking-tighter">Wello Chat</h2>
+            <p class="text-gray-400 text-sm mb-8 font-medium">Authentification GSM Juswell</p>
+            <div class="space-y-4">
+                <input type="tel" x-model="phoneInput" @keyup.enter="login()" placeholder="Numéro de téléphone"
+                       class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold text-center outline-none focus:ring-2 focus:ring-orange-500 transition">
+                <div x-show="phoneInput === dgPhone">
+                    <input type="password" x-model="passInput" @keyup.enter="login()" placeholder="Code secret DG"
+                           class="w-full p-4 bg-orange-50 border-2 border-orange-200 rounded-2xl font-bold text-center outline-none mb-4">
                 </div>
+                <p x-show="loginError" x-text="loginError" class="text-red-500 text-sm font-bold"></p>
+                <button @click="login()" :disabled="loginLoading"
+                        class="w-full py-5 bg-orange-500 text-white rounded-2xl font-black uppercase shadow-lg active:scale-95 transition hover:bg-orange-600 disabled:opacity-60">
+                    <span x-show="!loginLoading">Accéder</span>
+                    <span x-show="loginLoading">Connexion...</span>
+                </button>
             </div>
         </div>
-    </template>
+    </div>
+</template>
 
-    <!-- 2. INTERFACE PRINCIPALE -->
-    <template x-if="isLoggedIn">
-        <div class="flex h-screen w-full overflow-hidden bg-white xl:max-w-7xl xl:mx-auto xl:my-6 xl:h-[95vh] xl:rounded-3xl border border-gray-100 shadow-2xl">
-
-            <!-- SIDEBAR -->
-            <aside class="w-full lg:w-[400px] flex flex-col border-r border-gray-100" :class="activeChat ? 'hidden lg:flex' : 'flex'">
-                <header class="p-4 bg-white">
-                    <div class="flex justify-between items-center mb-4">
-                        <div class="flex items-center space-x-3">
-                            <img src="Logo_Wello_Chat_2.png" class="h-9 w-auto" alt="Logo">
-                            <h1 class="text-3xl font-extrabold tracking-tighter text-[#004aad]">Wello <span class="text-orange-500" x-text="isAdmin ? 'DG' : 'Chat'"></span></h1>
-                        </div>
-                        <div class="flex space-x-2 relative">
-                            <button @click="showSearch = !showSearch" class="p-2.5 rounded-full hover:bg-gray-100 text-gray-500">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-                            </button>
-                            <button @click="menuOpen = !menuOpen" class="p-2.5 rounded-full hover:bg-gray-100 transition">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" /></svg>
-                            </button>
-                            <div x-show="menuOpen" @click.away="menuOpen = false" x-transition
-                                 class="absolute right-0 top-12 w-56 bg-white border border-gray-100 rounded-xl shadow-xl p-2 z-20">
-                                <template x-if="isAdmin">
-                                    <button @click="showInviteModal = true; menuOpen = false"
-                                            class="w-full text-left p-3 hover:bg-blue-50 rounded-lg text-sm font-bold text-blue-600 border-b border-gray-50 mb-1">
-                                        + Créer une invitation
-                                    </button>
-                                </template>
-                                <button class="w-full text-left p-3 hover:bg-gray-50 rounded-lg text-sm font-bold text-gray-700">Paramètres</button>
-                                <button @click="logout()" class="w-full text-left p-3 hover:bg-gray-50 rounded-lg text-sm font-bold text-red-600">Déconnexion</button>
-                            </div>
-                        </div>
+<!-- 2. INTERFACE PRINCIPALE -->
+<template x-if="isLoggedIn">
+    <div class="flex h-screen w-full overflow-hidden bg-white xl:max-w-7xl xl:mx-auto xl:my-6 xl:h-[95vh] xl:rounded-3xl border border-gray-100 shadow-2xl">
+        <aside class="w-full lg:w-[400px] flex flex-col border-r border-gray-100" :class="activeChat ? 'hidden lg:flex' : 'flex'">
+            <header class="p-4 bg-white">
+                <div class="flex justify-between items-center mb-4">
+                    <div class="flex items-center space-x-3">
+                        <img src="Logo_Wello_Chat_2.png" class="h-9 w-auto" alt="">
+                        <h1 class="text-3xl font-extrabold tracking-tighter text-[#004aad]">Wello <span class="text-orange-500" x-text="isAdmin ? 'DG' : 'Chat'"></span></h1>
                     </div>
-                    <div x-show="showSearch" x-transition class="mb-4">
-                        <input type="text" x-model="searchQuery" placeholder="Rechercher..."
-                               class="w-full p-3 bg-gray-50 rounded-xl text-sm font-bold outline-none border border-gray-100">
-                    </div>
-                    <nav class="hidden lg:flex space-x-1 p-1 bg-gray-50 rounded-xl">
-                        <button @click="tab = 'chats'" :class="tab === 'chats' ? 'bg-[#004aad] text-white' : 'text-gray-500'"
-                                class="flex-1 py-2 text-center font-bold text-sm rounded-lg transition">Chats</button>
-                        <button @click="tab = 'groupes'" :class="tab === 'groupes' ? 'bg-[#004aad] text-white' : 'text-gray-500'"
-                                class="flex-1 py-2 text-center font-bold text-sm rounded-lg transition">Groupes</button>
-                        <button @click="tab = 'profil'" :class="tab === 'profil' ? 'bg-[#004aad] text-white' : 'text-gray-500'"
-                                class="flex-1 py-2 text-center font-bold text-sm rounded-lg transition">Profil</button>
-                    </nav>
-                </header>
-
-                <main class="flex-1 overflow-y-auto pb-24">
-                    <!-- ONGLET CHATS -->
-                    <div x-show="tab === 'chats'" class="divide-y divide-gray-50">
-                        <template x-for="user in filteredUsers" :key="user.id">
-                            <div @click="activeChat = user; tab = 'chats'"
-                                 class="px-4 py-4 flex items-center hover:bg-gray-50 cursor-pointer transition">
-                                <div class="h-12 w-12 rounded-full bg-[#004aad]/10 flex items-center justify-center text-[#004aad] font-black"
-                                     x-text="user.name.charAt(0).toUpperCase()"></div>
-                                <div class="ml-4 flex-1">
-                                    <h3 class="font-bold text-gray-900" x-text="user.name"></h3>
-                                    <p class="text-xs text-gray-500 truncate" x-text="user.last_message || 'Démarrer la discussion'"></p>
-                                </div>
-                            </div>
-                        </template>
-                        <template x-if="filteredUsers.length === 0">
-                            <div class="p-12 text-center text-gray-300 italic text-sm">Aucun contact</div>
-                        </template>
-                    </div>
-
-                    <!-- ONGLET GROUPES -->
-                    <div x-show="tab === 'groupes'" class="divide-y divide-gray-50">
-                        <template x-if="isAdmin">
-                            <div class="p-6">
-                                <button @click="showGroupModal = true"
-                                        class="w-full py-4 bg-orange-100 text-orange-600 rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-orange-200 transition">
-                                    + Créer un nouveau groupe
-                                </button>
-                            </div>
-                        </template>
-                        <template x-for="group in filteredGroups" :key="group.id">
-                            <div @click="activeChat = group"
-                                 class="px-4 py-4 flex items-center hover:bg-gray-50 cursor-pointer transition">
-                                <div class="h-12 w-12 rounded-xl bg-orange-500 flex items-center justify-center text-white font-black shadow-sm">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-                                </div>
-                                <div class="ml-4 flex-1">
-                                    <h3 class="font-bold text-gray-900" x-text="group.name"></h3>
-                                    <p class="text-[10px] text-orange-500 font-bold uppercase tracking-widest">Espace de travail</p>
-                                </div>
-                            </div>
-                        </template>
-                        <template x-if="filteredGroups.length === 0">
-                            <div class="p-12 text-center text-gray-300 italic text-sm">Aucun groupe assigné</div>
-                        </template>
-                    </div>
-
-                    <!-- ONGLET PROFIL -->
-                    <div x-show="tab === 'profil'" class="p-8 text-center">
-                        <div class="h-24 w-24 bg-gray-100 rounded-full mx-auto mb-6 flex items-center justify-center text-[#004aad] text-3xl font-black border-4 border-white shadow-md"
-                             x-text="userProfile.name ? userProfile.name.charAt(0).toUpperCase() : '?'">
-                        </div>
-                        <h3 class="font-black text-xl text-gray-950 uppercase" x-text="userProfile.name"></h3>
-                        <p class="text-[10px] font-black text-orange-500 uppercase mb-6" x-text="userProfile.role"></p>
-                        <div class="bg-gray-50 rounded-3xl p-5 text-left border border-gray-100">
-                            <span class="text-[10px] font-bold text-gray-400 uppercase block mb-1">Numéro de téléphone</span>
-                            <span class="font-bold text-gray-700 text-lg" x-text="phoneInput"></span>
-                        </div>
-                        <button @click="logout()"
-                                class="mt-8 w-full py-4 bg-red-50 text-red-600 rounded-2xl font-black uppercase text-[10px] hover:bg-red-100 transition">
-                            Déconnexion
+                    <div class="flex space-x-2 relative">
+                        <button @click="showSearch = !showSearch" class="p-2.5 rounded-full hover:bg-gray-100 text-gray-500">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                         </button>
+                        <button @click="menuOpen = !menuOpen" class="p-2.5 rounded-full hover:bg-gray-100 transition">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"/></svg>
+                        </button>
+                        <div x-show="menuOpen" @click.away="menuOpen = false" x-transition class="absolute right-0 top-12 w-56 bg-white border border-gray-100 rounded-xl shadow-xl p-2 z-20">
+                            <template x-if="isAdmin">
+                                <button @click="showInviteModal = true; menuOpen = false" class="w-full text-left p-3 hover:bg-blue-50 rounded-lg text-sm font-bold text-blue-600 border-b border-gray-50 mb-1">+ Créer une invitation</button>
+                            </template>
+                            <button class="w-full text-left p-3 hover:bg-gray-50 rounded-lg text-sm font-bold text-gray-700">Paramètres</button>
+                            <button @click="logout()" class="w-full text-left p-3 hover:bg-gray-50 rounded-lg text-sm font-bold text-red-600">Déconnexion</button>
+                        </div>
                     </div>
-                </main>
-
-                <!-- NAVIGATION MOBILE BAS -->
-                <nav class="lg:hidden fixed bottom-0 left-0 w-full bg-white border-t border-gray-100 flex justify-around p-3 pb-8">
-                    <button @click="tab = 'chats'" :class="tab === 'chats' ? 'text-[#004aad]' : 'text-gray-300'" class="flex flex-col items-center">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
-                        <span class="text-[9px] font-bold mt-1 uppercase">Chats</span>
-                    </button>
-                    <button @click="tab = 'groupes'" :class="tab === 'groupes' ? 'text-[#004aad]' : 'text-gray-300'" class="flex flex-col items-center">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-                        <span class="text-[9px] font-bold mt-1 uppercase">Groupes</span>
-                    </button>
-                    <button @click="tab = 'profil'" :class="tab === 'profil' ? 'text-[#004aad]' : 'text-gray-300'" class="flex flex-col items-center">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
-                        <span class="text-[9px] font-bold mt-1 uppercase">Profil</span>
-                    </button>
+                </div>
+                <div x-show="showSearch" x-transition class="mb-4">
+                    <input type="text" x-model="searchQuery" placeholder="Rechercher..." class="w-full p-3 bg-gray-50 rounded-xl text-sm font-bold outline-none border border-gray-100">
+                </div>
+                <nav class="hidden lg:flex space-x-1 p-1 bg-gray-50 rounded-xl">
+                    <button @click="tab='chats'" :class="tab==='chats' ? 'bg-[#004aad] text-white' : 'text-gray-500'" class="flex-1 py-2 text-center font-bold text-sm rounded-lg transition">Chats</button>
+                    <button @click="tab='groupes'" :class="tab==='groupes' ? 'bg-[#004aad] text-white' : 'text-gray-500'" class="flex-1 py-2 text-center font-bold text-sm rounded-lg transition">Groupes</button>
+                    <button @click="tab='profil'" :class="tab==='profil' ? 'bg-[#004aad] text-white' : 'text-gray-500'" class="flex-1 py-2 text-center font-bold text-sm rounded-lg transition">Profil</button>
                 </nav>
-            </aside>
+            </header>
 
-            <!-- ZONE DE DISCUSSION -->
-            <main class="flex-1 flex flex-col bg-gray-50" :class="activeChat ? 'flex' : 'hidden lg:flex'">
-                <template x-if="activeChat">
-                    <div class="flex flex-col h-full bg-white">
-                        <div class="p-4 border-b border-gray-100 flex items-center justify-between bg-white shadow-sm min-h-[70px]">
-                            <div class="flex items-center">
-                                <button @click="activeChat = null" class="lg:hidden mr-3 text-gray-400">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>
-                                </button>
-                                <div class="h-10 w-10 rounded-full bg-[#004aad] flex items-center justify-center text-white font-bold"
-                                     x-text="activeChat.name.charAt(0).toUpperCase()"></div>
-                                <div class="ml-3">
-                                    <h4 class="font-bold text-gray-950" x-text="activeChat.name"></h4>
-                                    <p class="text-[10px] text-green-500 font-bold uppercase tracking-widest">Connecté</p>
-                                </div>
-                            </div>
-                            <template x-if="isAdmin && tab === 'groupes'">
-                                <button @click="showManageMembers = true"
-                                        class="flex items-center justify-center h-10 w-10 bg-[#004aad] text-white rounded-full shadow-lg hover:scale-110 transition-transform cursor-pointer">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
-                                </button>
-                            </template>
-                        </div>
-
-                        <div class="flex-1 bg-gray-50 p-6 overflow-y-auto flex flex-col justify-end" id="messages-container">
-                            <!-- Messages chargés dynamiquement -->
-                            <template x-if="messages.length === 0">
-                                <div class="flex flex-col items-center justify-center h-full text-center">
-                                    <div class="p-6 bg-white rounded-3xl shadow-sm max-w-xs">
-                                        <p class="text-gray-400 text-sm italic">Début de la discussion avec <span class="font-bold text-[#004aad]" x-text="activeChat.name"></span>.</p>
-                                    </div>
-                                </div>
-                            </template>
-                            <template x-for="msg in messages" :key="msg.id">
-                                <div class="mb-3 flex" :class="msg.senderId === phoneInput ? 'justify-end' : 'justify-start'">
-                                    <div class="max-w-xs lg:max-w-md px-4 py-3 rounded-2xl shadow-sm"
-                                         :class="msg.senderId === phoneInput ? 'bg-[#004aad] text-white rounded-br-none' : 'bg-white text-gray-800 rounded-bl-none'">
-                                        <p class="text-sm font-medium" x-text="msg.text"></p>
-                                        <p class="text-[9px] mt-1 opacity-60 text-right" x-text="formatTime(msg.timestamp)"></p>
-                                    </div>
-                                </div>
-                            </template>
-                        </div>
-
-                        <div class="p-4 bg-white border-t border-gray-100">
-                            <div class="flex items-center bg-gray-50 rounded-2xl p-2">
-                                <input type="text" x-model="newMessage"
-                                       @keyup.enter="sendMessage()"
-                                       placeholder="Écrivez un message..."
-                                       class="flex-1 bg-transparent px-4 py-2 outline-none font-medium">
-                                <button @click="sendMessage()"
-                                        class="p-3 bg-[#004aad] text-white rounded-xl shadow-lg hover:bg-blue-700 transition">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
-                                </button>
+            <main class="flex-1 overflow-y-auto pb-24">
+                <div x-show="tab === 'chats'" class="divide-y divide-gray-50">
+                    <template x-for="user in filteredUsers" :key="user.id">
+                        <div @click="activeChat = user" class="px-4 py-4 flex items-center hover:bg-gray-50 cursor-pointer transition">
+                            <div class="h-12 w-12 rounded-full bg-[#004aad]/10 flex items-center justify-center text-[#004aad] font-black" x-text="user.name.charAt(0).toUpperCase()"></div>
+                            <div class="ml-4 flex-1">
+                                <h3 class="font-bold text-gray-900" x-text="user.name"></h3>
+                                <p class="text-xs text-gray-500 truncate" x-text="user.last_message || 'Démarrer la discussion'"></p>
                             </div>
                         </div>
+                    </template>
+                    <template x-if="filteredUsers.length === 0"><div class="p-12 text-center text-gray-300 italic text-sm">Aucun contact</div></template>
+                </div>
+
+                <div x-show="tab === 'groupes'" class="divide-y divide-gray-50">
+                    <template x-if="isAdmin">
+                        <div class="p-6"><button @click="showGroupModal = true" class="w-full py-4 bg-orange-100 text-orange-600 rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-orange-200 transition">+ Créer un nouveau groupe</button></div>
+                    </template>
+                    <template x-for="group in filteredGroups" :key="group.id">
+                        <div @click="activeChat = group" class="px-4 py-4 flex items-center hover:bg-gray-50 cursor-pointer transition">
+                            <div class="h-12 w-12 rounded-xl bg-orange-500 flex items-center justify-center text-white font-black shadow-sm">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                            </div>
+                            <div class="ml-4 flex-1">
+                                <h3 class="font-bold text-gray-900" x-text="group.name"></h3>
+                                <p class="text-[10px] text-orange-500 font-bold uppercase tracking-widest">Espace de travail</p>
+                            </div>
+                        </div>
+                    </template>
+                    <template x-if="filteredGroups.length === 0"><div class="p-12 text-center text-gray-300 italic text-sm">Aucun groupe assigné</div></template>
+                </div>
+
+                <div x-show="tab === 'profil'" class="p-8 text-center">
+                    <div class="h-24 w-24 bg-gray-100 rounded-full mx-auto mb-6 flex items-center justify-center text-[#004aad] text-3xl font-black border-4 border-white shadow-md"
+                         x-text="userProfile.name ? userProfile.name.charAt(0).toUpperCase() : '?'"></div>
+                    <h3 class="font-black text-xl text-gray-950 uppercase" x-text="userProfile.name"></h3>
+                    <p class="text-[10px] font-black text-orange-500 uppercase mb-6" x-text="userProfile.role"></p>
+                    <div class="bg-gray-50 rounded-3xl p-5 text-left border border-gray-100">
+                        <span class="text-[10px] font-bold text-gray-400 uppercase block mb-1">Numéro de téléphone</span>
+                        <span class="font-bold text-gray-700 text-lg" x-text="phoneInput"></span>
                     </div>
-                </template>
-                <template x-if="!activeChat">
-                    <div class="h-full flex flex-col items-center justify-center p-12 text-center">
-                        <img src="Logo_Wello_Chat_2.png" class="h-20 opacity-10 mb-4 grayscale" alt="">
-                        <h2 class="text-2xl font-black text-gray-200 uppercase tracking-widest">Wello Workspace</h2>
-                    </div>
-                </template>
+                    <button @click="logout()" class="mt-8 w-full py-4 bg-red-50 text-red-600 rounded-2xl font-black uppercase text-[10px] hover:bg-red-100 transition">Déconnexion</button>
+                </div>
             </main>
-        </div>
-    </template>
 
-    <!-- 3. MODALES -->
+            <nav class="lg:hidden fixed bottom-0 left-0 w-full bg-white border-t border-gray-100 flex justify-around p-3 pb-8">
+                <button @click="tab='chats'" :class="tab==='chats' ? 'text-[#004aad]' : 'text-gray-300'" class="flex flex-col items-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+                    <span class="text-[9px] font-bold mt-1 uppercase">Chats</span>
+                </button>
+                <button @click="tab='groupes'" :class="tab==='groupes' ? 'text-[#004aad]' : 'text-gray-300'" class="flex flex-col items-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                    <span class="text-[9px] font-bold mt-1 uppercase">Groupes</span>
+                </button>
+                <button @click="tab='profil'" :class="tab==='profil' ? 'text-[#004aad]' : 'text-gray-300'" class="flex flex-col items-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                    <span class="text-[9px] font-bold mt-1 uppercase">Profil</span>
+                </button>
+            </nav>
+        </aside>
 
-    <!-- Modale Nouveau Groupe -->
-    <template x-if="showGroupModal">
-        <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-            <div class="bg-white w-full max-w-md rounded-[40px] p-8 shadow-2xl">
-                <h3 class="text-2xl font-black text-[#004aad] mb-6 uppercase tracking-tighter text-center">Nouveau Groupe</h3>
-                <div class="space-y-4">
-                    <input type="text" x-model="newGroupName" placeholder="Nom du projet"
-                           class="w-full p-4 bg-gray-50 rounded-2xl font-bold outline-none border border-gray-100 text-center uppercase tracking-widest focus:ring-2 focus:ring-orange-500 transition">
-                    <div class="max-h-48 overflow-y-auto border border-gray-100 rounded-2xl p-2">
-                        <p class="text-[9px] font-black text-gray-400 uppercase p-2">Sélectionner les membres</p>
-                        <template x-for="user in usersList" :key="user.id">
-                            <label class="flex items-center p-2 hover:bg-gray-50 rounded-xl transition cursor-pointer">
-                                <input type="checkbox" :value="user.phone" x-model="selectedMembers" class="h-4 w-4 text-[#004aad] rounded border-gray-300">
-                                <span class="ml-3 text-sm font-bold text-gray-700" x-text="user.name"></span>
-                            </label>
+        <main class="flex-1 flex flex-col bg-gray-50" :class="activeChat ? 'flex' : 'hidden lg:flex'">
+            <template x-if="activeChat">
+                <div class="flex flex-col h-full bg-white">
+                    <div class="p-4 border-b border-gray-100 flex items-center justify-between bg-white shadow-sm min-h-[70px]">
+                        <div class="flex items-center">
+                            <button @click="activeChat = null" class="lg:hidden mr-3 text-gray-400">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                            </button>
+                            <div class="h-10 w-10 rounded-full bg-[#004aad] flex items-center justify-center text-white font-bold" x-text="activeChat.name.charAt(0).toUpperCase()"></div>
+                            <div class="ml-3">
+                                <h4 class="font-bold text-gray-950" x-text="activeChat.name"></h4>
+                                <p class="text-[10px] text-green-500 font-bold uppercase tracking-widest">Connecté</p>
+                            </div>
+                        </div>
+                        <template x-if="isAdmin && tab === 'groupes'">
+                            <button @click="showManageMembers = true" class="flex items-center justify-center h-10 w-10 bg-[#004aad] text-white rounded-full shadow-lg hover:scale-110 transition-transform cursor-pointer">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
+                            </button>
                         </template>
                     </div>
-                    <div class="flex space-x-3 pt-4">
-                        <button @click="showGroupModal = false" class="flex-1 py-4 bg-gray-100 text-gray-500 rounded-2xl font-black uppercase text-[10px] hover:bg-gray-200 transition">Annuler</button>
-                        <button @click="createGroup()" class="flex-1 py-4 bg-[#004aad] text-white rounded-2xl font-black uppercase text-[10px] shadow-lg hover:opacity-90 active:scale-95 transition">Créer</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </template>
 
-    <!-- Modale Gérer les Membres -->
-    <template x-if="showManageMembers">
-        <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-            <div class="bg-white w-full max-w-md rounded-[40px] p-8 shadow-2xl">
-                <h3 class="text-2xl font-black text-[#004aad] mb-2 uppercase tracking-tighter text-center">Membres du Groupe</h3>
-                <p class="text-center text-[10px] font-bold text-gray-400 uppercase mb-6" x-text="activeChat.name"></p>
-                <div class="space-y-4">
-                    <div class="max-h-60 overflow-y-auto border border-gray-100 rounded-2xl p-2">
-                        <template x-for="user in usersList" :key="user.id">
-                            <label class="flex items-center p-2 hover:bg-gray-50 rounded-xl transition cursor-pointer">
-                                <input type="checkbox" :value="user.phone" x-model="activeChat.members" class="h-4 w-4 text-[#004aad] rounded border-gray-300">
-                                <div class="ml-3 flex flex-col">
-                                    <span class="text-sm font-bold text-gray-700" x-text="user.name"></span>
-                                    <span class="text-[9px] text-gray-400" x-text="user.phone"></span>
+                    <div id="msgs" class="flex-1 bg-gray-50 p-4 overflow-y-auto flex flex-col">
+                        <template x-if="messages.length === 0">
+                            <div class="flex-1 flex items-center justify-center">
+                                <div class="p-6 bg-white rounded-3xl shadow-sm max-w-xs text-center">
+                                    <p class="text-gray-400 text-sm italic">Début de la discussion avec <span class="font-bold text-[#004aad]" x-text="activeChat.name"></span>.</p>
                                 </div>
-                            </label>
+                            </div>
+                        </template>
+                        <template x-for="msg in messages" :key="msg.id">
+                            <div class="mb-3 flex" :class="msg.senderId === phoneInput ? 'justify-end' : 'justify-start'">
+                                <div class="max-w-xs lg:max-w-md px-4 py-3 rounded-2xl shadow-sm text-sm"
+                                     :class="msg.senderId === phoneInput ? 'bg-[#004aad] text-white rounded-br-none' : 'bg-white text-gray-800 rounded-bl-none'">
+                                    <p x-text="msg.text"></p>
+                                    <p class="text-[9px] mt-1 opacity-60 text-right" x-text="formatTime(msg.timestamp)"></p>
+                                </div>
+                            </div>
                         </template>
                     </div>
-                    <div class="flex space-x-3 pt-4">
-                        <button @click="showManageMembers = false" class="flex-1 py-4 bg-gray-100 text-gray-500 rounded-2xl font-black uppercase text-[10px] hover:bg-gray-200 transition">Fermer</button>
-                        <button @click="updateGroupMembers()" class="flex-1 py-4 bg-orange-500 text-white rounded-2xl font-black uppercase text-[10px] shadow-lg hover:bg-orange-600 active:scale-95 transition">Enregistrer</button>
+
+                    <div class="p-4 bg-white border-t border-gray-100">
+                        <div class="flex items-center bg-gray-50 rounded-2xl p-2">
+                            <input type="text" x-model="newMessage" @keyup.enter="sendMessage()" placeholder="Écrivez un message..." class="flex-1 bg-transparent px-4 py-2 outline-none font-medium">
+                            <button @click="sendMessage()" class="p-3 bg-[#004aad] text-white rounded-xl shadow-lg hover:bg-blue-700 transition">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
+                            </button>
+                        </div>
                     </div>
+                </div>
+            </template>
+            <template x-if="!activeChat">
+                <div class="h-full flex flex-col items-center justify-center p-12 text-center">
+                    <img src="Logo_Wello_Chat_2.png" class="h-20 opacity-10 mb-4 grayscale" alt="">
+                    <h2 class="text-2xl font-black text-gray-200 uppercase tracking-widest">Wello Workspace</h2>
+                </div>
+            </template>
+        </main>
+    </div>
+</template>
+
+<!-- MODALES -->
+<template x-if="showGroupModal">
+    <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div class="bg-white w-full max-w-md rounded-[40px] p-8 shadow-2xl">
+            <h3 class="text-2xl font-black text-[#004aad] mb-6 uppercase tracking-tighter text-center">Nouveau Groupe</h3>
+            <div class="space-y-4">
+                <input type="text" x-model="newGroupName" placeholder="Nom du projet" class="w-full p-4 bg-gray-50 rounded-2xl font-bold outline-none border border-gray-100 text-center uppercase tracking-widest focus:ring-2 focus:ring-orange-500 transition">
+                <div class="max-h-48 overflow-y-auto border border-gray-100 rounded-2xl p-2">
+                    <p class="text-[9px] font-black text-gray-400 uppercase p-2">Sélectionner les membres</p>
+                    <template x-for="user in usersList" :key="user.id">
+                        <label class="flex items-center p-2 hover:bg-gray-50 rounded-xl transition cursor-pointer">
+                            <input type="checkbox" :value="user.phone" x-model="selectedMembers" class="h-4 w-4 text-[#004aad] rounded border-gray-300">
+                            <span class="ml-3 text-sm font-bold text-gray-700" x-text="user.name"></span>
+                        </label>
+                    </template>
+                </div>
+                <div class="flex space-x-3 pt-4">
+                    <button @click="showGroupModal = false" class="flex-1 py-4 bg-gray-100 text-gray-500 rounded-2xl font-black uppercase text-[10px] hover:bg-gray-200 transition">Annuler</button>
+                    <button @click="createGroup()" class="flex-1 py-4 bg-[#004aad] text-white rounded-2xl font-black uppercase text-[10px] shadow-lg hover:opacity-90 active:scale-95 transition">Créer</button>
                 </div>
             </div>
         </div>
-    </template>
+    </div>
+</template>
 
-    <!-- Modale Invitation -->
-    <template x-if="showInviteModal">
-        <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-            <div class="bg-white w-full max-w-md rounded-[40px] p-8 shadow-2xl relative">
-                <h3 class="text-2xl font-black text-[#004aad] mb-6 uppercase tracking-tighter">Nouvel Accès</h3>
-                <div class="space-y-4">
-                    <select x-model="inviteRole" class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold text-gray-700 outline-none">
-                        <option value="client">Client</option>
-                        <option value="partenaire">Partenaire</option>
-                        <option value="personnel">Personnel</option>
-                    </select>
-                    <input type="tel" x-model="invitePhone" placeholder="Numéro du client"
-                           class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold outline-none">
-                    <input type="text" x-model="inviteProject" placeholder="Nom du Projet / Société"
-                           class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold outline-none">
-                    <button @click="generateLink()"
-                            class="w-full py-4 bg-[#004aad] text-white rounded-2xl font-black uppercase tracking-widest shadow-lg active:scale-95 transition">
-                        Générer le lien
-                    </button>
-                    <div x-show="generatedLink" class="mt-4 p-4 bg-orange-50 rounded-2xl border border-orange-100">
-                        <p class="text-[9px] font-black text-orange-600 uppercase mb-2 text-center">Lien généré :</p>
-                        <input type="text" readonly :value="generatedLink"
-                               class="bg-white p-2 rounded-lg text-[10px] font-mono font-bold w-full text-center border-none">
-                        <button @click="copyLink()"
-                                class="mt-2 w-full py-2 bg-orange-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-orange-600 transition">
-                            Copier le lien
-                        </button>
-                    </div>
-                    <button @click="showInviteModal = false; generatedLink = ''"
-                            class="w-full py-2 text-gray-400 text-[10px] font-black uppercase mt-2 tracking-widest">
-                        Fermer
-                    </button>
+<template x-if="showManageMembers">
+    <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div class="bg-white w-full max-w-md rounded-[40px] p-8 shadow-2xl">
+            <h3 class="text-2xl font-black text-[#004aad] mb-2 uppercase tracking-tighter text-center">Membres du Groupe</h3>
+            <p class="text-center text-[10px] font-bold text-gray-400 uppercase mb-6" x-text="activeChat.name"></p>
+            <div class="space-y-4">
+                <div class="max-h-60 overflow-y-auto border border-gray-100 rounded-2xl p-2">
+                    <template x-for="user in usersList" :key="user.id">
+                        <label class="flex items-center p-2 hover:bg-gray-50 rounded-xl transition cursor-pointer">
+                            <input type="checkbox" :value="user.phone" x-model="activeChat.members" class="h-4 w-4 text-[#004aad] rounded border-gray-300">
+                            <div class="ml-3 flex flex-col">
+                                <span class="text-sm font-bold text-gray-700" x-text="user.name"></span>
+                                <span class="text-[9px] text-gray-400" x-text="user.phone"></span>
+                            </div>
+                        </label>
+                    </template>
+                </div>
+                <div class="flex space-x-3 pt-4">
+                    <button @click="showManageMembers = false" class="flex-1 py-4 bg-gray-100 text-gray-500 rounded-2xl font-black uppercase text-[10px] hover:bg-gray-200 transition">Fermer</button>
+                    <button @click="updateGroupMembers()" class="flex-1 py-4 bg-orange-500 text-white rounded-2xl font-black uppercase text-[10px] shadow-lg hover:bg-orange-600 active:scale-95 transition">Enregistrer</button>
                 </div>
             </div>
         </div>
-    </template>
+    </div>
+</template>
 
-    <!-- Firebase SDK v10 (modular) -->
-    <script type="module" src="app.js"></script>
+<template x-if="showInviteModal">
+    <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div class="bg-white w-full max-w-md rounded-[40px] p-8 shadow-2xl">
+            <h3 class="text-2xl font-black text-[#004aad] mb-6 uppercase tracking-tighter">Nouvel Accès</h3>
+            <div class="space-y-4">
+                <select x-model="inviteRole" class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold text-gray-700 outline-none">
+                    <option value="client">Client</option>
+                    <option value="partenaire">Partenaire</option>
+                    <option value="personnel">Personnel</option>
+                </select>
+                <input type="tel" x-model="invitePhone" placeholder="Numéro du client" class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold outline-none">
+                <input type="text" x-model="inviteProject" placeholder="Nom du Projet / Société" class="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl font-bold outline-none">
+                <button @click="generateLink()" class="w-full py-4 bg-[#004aad] text-white rounded-2xl font-black uppercase tracking-widest shadow-lg active:scale-95 transition">Générer le lien</button>
+                <div x-show="generatedLink" class="mt-4 p-4 bg-orange-50 rounded-2xl border border-orange-100">
+                    <p class="text-[9px] font-black text-orange-600 uppercase mb-2 text-center">Lien généré :</p>
+                    <input id="gen-link" type="text" readonly :value="generatedLink" class="bg-white p-2 rounded-lg text-[10px] font-mono font-bold w-full text-center border-none">
+                    <button @click="copyLink()" class="mt-2 w-full py-2 bg-orange-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-orange-600 transition">Copier le lien</button>
+                </div>
+                <button @click="showInviteModal = false; generatedLink = ''" class="w-full py-2 text-gray-400 text-[10px] font-black uppercase mt-2 tracking-widest">Fermer</button>
+            </div>
+        </div>
+    </div>
+</template>
+
 </body>
 </html>
