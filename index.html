@@ -24,7 +24,8 @@
     <!-- Firebase SDK compat -->
     <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
-    <!-- firebase-storage supprimé : upload géré par Cloudinary -->
+    <!-- firebase-messaging pour les notifications push -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
 
     <script>
       const firebaseConfig = {
@@ -54,16 +55,28 @@
             var d=ts.toDate?ts.toDate():new Date(ts);
             return d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
         }
-        // Génère les initiales : "Justin TSOGBE" → "JT" ; "Directeur Général" → "DG"
         function initiales(name) {
             if(!name) return '?';
             var parts = name.trim().split(/\s+/);
             if(parts.length===1) return parts[0].charAt(0).toUpperCase();
             return (parts[0].charAt(0)+parts[parts.length-1].charAt(0)).toUpperCase();
         }
+
         // ══════════════════════════════════════════════════
-        //  CLOUDINARY — Upload sans Firebase Storage
-        //  Cloud name : dajyqtsei  |  Preset : Wello Chat
+        //  PERSISTANCE SESSION — connexion auto
+        // ══════════════════════════════════════════════════
+        function saveSession(phone, isAdmin) {
+            try { localStorage.setItem('wello_phone', phone); localStorage.setItem('wello_admin', isAdmin?'1':'0'); } catch(e){}
+        }
+        function loadSession() {
+            try { return { phone: localStorage.getItem('wello_phone')||'', isAdmin: localStorage.getItem('wello_admin')==='1' }; } catch(e){ return {phone:'',isAdmin:false}; }
+        }
+        function clearSession() {
+            try { localStorage.removeItem('wello_phone'); localStorage.removeItem('wello_admin'); } catch(e){}
+        }
+
+        // ══════════════════════════════════════════════════
+        //  CLOUDINARY
         // ══════════════════════════════════════════════════
         const CLOUDINARY_CLOUD = 'dajyqtsei';
         const CLOUDINARY_PRESET = 'wello_chat';
@@ -77,7 +90,7 @@
             return new Promise(function(resolve, reject) {
                 var xhr = new XMLHttpRequest();
                 var resourceType = file.type.startsWith('video/') ? 'video'
-                    : file.type.startsWith('audio/') ? 'video'  // Cloudinary gère audio via /video/
+                    : file.type.startsWith('audio/') ? 'video'
                     : 'auto';
                 xhr.open('POST',
                     'https://api.cloudinary.com/v1_1/' + CLOUDINARY_CLOUD + '/' + resourceType + '/upload');
@@ -105,6 +118,35 @@
         }
 
         // ══════════════════════════════════════════════════
+        //  NOTIFICATIONS PUSH (FCM)
+        // ══════════════════════════════════════════════════
+        // Clé VAPID publique Firebase — remplacez par la vôtre dans la console Firebase
+        // Project Settings > Cloud Messaging > Web Push certificates
+        const VAPID_KEY = 'YOUR_VAPID_PUBLIC_KEY'; // ← remplacez
+
+        async function requestNotifPermission(phone) {
+            try {
+                if (!('Notification' in window)) return;
+                const perm = await Notification.requestPermission();
+                if (perm !== 'granted') return;
+                if (!firebase.messaging) return;
+                const messaging = firebase.messaging();
+                const token = await messaging.getToken({ vapidKey: VAPID_KEY });
+                if (token && phone) {
+                    await db.collection('fcm_tokens').doc(phone).set({ token, phone, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+                }
+            } catch(e) { console.warn('[FCM]', e); }
+        }
+
+        // Notification locale (fallback si app ouverte)
+        function showLocalNotif(title, body, icon) {
+            if (document.visibilityState === 'visible') return; // app en avant-plan → pas de notif système
+            if (Notification.permission === 'granted') {
+                new Notification(title, { body, icon: icon || 'Logo_Wello_Chat_2.png', badge: 'favicon-96x96.png' });
+            }
+        }
+
+        // ══════════════════════════════════════════════════
         //  welloApp — défini AVANT Alpine (defer)
         // ══════════════════════════════════════════════════
         function welloApp() { return {
@@ -113,6 +155,7 @@
             loginLoading:false, loginError:'',
             phoneInput:'', passInput:'',
             dgPhone:'92239333', dgCode:'Juswell',
+            sessionRestored:false,
 
             // ── UI ──
             tab:'chats', showSearch:false, searchQuery:'', menuOpen:false,
@@ -121,14 +164,22 @@
             activeChat:null, messages:[], newMessage:'',
             unsubMessages:null, uploadProgress:0,
 
+            // ── Context menu (appui long) ──
+            ctxMenu:null, // { msgId, x, y, msg }
+            editingMsgId:null, editingText:'',
+            ctxLongPressTimer:null,
+
             // ── Modales ──
             showGroupModal:false, showManageMembers:false,
             showInviteModal:false, showDeleteGroup:false,
             groupToDelete:null,
 
+            // ── Toast ──
+            toastMsg:'', toastTimer:null,
+
             // ── Appels WebRTC ──
-            callState:null,   // null | 'outgoing' | 'incoming' | 'active'
-            callType:null,    // 'audio' | 'video'
+            callState:null,
+            callType:null,
             callTarget:null,
             localStream:null, remoteStream:null,
             peerConn:null,
@@ -159,22 +210,65 @@
             },
 
             // ── Init ──
-            init(){
+            async init(){
                 var self=this;
                 this.$watch('activeChat',function(chat){
                     if(self.unsubMessages){self.unsubMessages();self.unsubMessages=null;}
                     self.messages=[];
+                    self.ctxMenu=null;
                     if(chat) self.listenMessages();
                 });
+
+                // Fermer menu contexte au clic ailleurs
+                document.addEventListener('click', function(e){
+                    if(self.ctxMenu && !e.target.closest('.ctx-menu')) self.ctxMenu=null;
+                });
+
+                // Restaurer session automatiquement
+                var sess = loadSession();
+                if(sess.phone) {
+                    self.phoneInput = sess.phone;
+                    self.sessionRestored = true;
+                    await self.loginSilent(sess);
+                }
+
                 var token=new URLSearchParams(window.location.search).get('invite');
                 if(token) this.handleInviteToken(token);
             },
 
             initiales(name){ return initiales(name); },
 
+            // ── Toast ──
+            showToast(msg){
+                this.toastMsg=msg;
+                if(this.toastTimer) clearTimeout(this.toastTimer);
+                this.toastTimer=setTimeout(()=>this.toastMsg='',3000);
+            },
+
             // ══════════════════════════════════════════════
             //  AUTH
             // ══════════════════════════════════════════════
+            async loginSilent(sess){
+                // Connexion silencieuse depuis le localStorage
+                try{
+                    if(sess.isAdmin){
+                        this.isAdmin=true; this.isLoggedIn=true;
+                        this.userProfile={name:'Directeur Général',role:'Administrateur'};
+                        await this.loadAllUsers(); await this.loadGroups();
+                    } else {
+                        var snap=await db.collection('users').where('phone_number','==',sess.phone).get();
+                        if(snap.empty){ clearSession(); return; }
+                        var data=snap.docs[0].data();
+                        this.isAdmin=false; this.isLoggedIn=true;
+                        this.userProfile={name:data.name,role:data.role};
+                        this.usersList=[{id:'dg',name:'Directeur Général (GSM)',phone:this.dgPhone,last_message:'Support disponible'}];
+                        await this.loadGroups();
+                    }
+                    this.listenIncomingCalls();
+                    requestNotifPermission(sess.phone);
+                }catch(e){ console.error(e); clearSession(); }
+            },
+
             async login(){
                 if(!this.phoneInput.trim()) return;
                 this.loginError=''; this.loginLoading=true;
@@ -183,6 +277,7 @@
                         if(this.passInput!==this.dgCode){this.loginError='Code DG incorrect.';return;}
                         this.isAdmin=true; this.isLoggedIn=true;
                         this.userProfile={name:'Directeur Général',role:'Administrateur'};
+                        saveSession(this.dgPhone, true);
                         await this.loadAllUsers(); await this.loadGroups();
                     } else {
                         var snap=await db.collection('users').where('phone_number','==',this.phoneInput).get();
@@ -191,8 +286,11 @@
                         this.isAdmin=false; this.isLoggedIn=true;
                         this.userProfile={name:data.name,role:data.role};
                         this.usersList=[{id:'dg',name:'Directeur Général (GSM)',phone:this.dgPhone,last_message:'Support disponible'}];
+                        saveSession(this.phoneInput, false);
                         await this.loadGroups();
                     }
+                    this.listenIncomingCalls();
+                    requestNotifPermission(this.phoneInput);
                 } catch(e){console.error(e);this.loginError='Erreur. Réessayez.';}
                 finally{this.loginLoading=false;}
             },
@@ -201,9 +299,10 @@
                 if(this.unsubMessages) this.unsubMessages();
                 if(this.unsubCall) this.unsubCall();
                 this.hangUp();
+                clearSession();
                 Object.assign(this,{isLoggedIn:false,isAdmin:false,phoneInput:'',passInput:'',
                     usersList:[],groupsList:[],activeChat:null,messages:[],
-                    userProfile:{name:'',role:''}});
+                    userProfile:{name:'',role:''},sessionRestored:false});
             },
 
             // ══════════════════════════════════════════════
@@ -223,7 +322,7 @@
             },
 
             // ══════════════════════════════════════════════
-            //  GROUPES — créer / supprimer
+            //  GROUPES
             // ══════════════════════════════════════════════
             async createGroup(){
                 if(!this.newGroupName.trim()) return alert('Nom requis');
@@ -332,7 +431,92 @@
             },
 
             // ══════════════════════════════════════════════
-            //  MESSAGES — vocal (enregistrement micro)
+            //  MESSAGES — CONTEXT MENU (appui long)
+            // ══════════════════════════════════════════════
+            onMsgLongPress(msg, event){
+                var isMine = msg.senderId===this.phoneInput;
+                var isDG = this.isAdmin;
+                // Vérifier fenêtre de 2 min
+                var canEdit = isMine && msg.type==='text' && !msg.deleted && this.withinTwoMin(msg.timestamp);
+                var canDeleteSelf = isMine && !msg.deleted && this.withinTwoMin(msg.timestamp);
+                var canDeleteDG = isDG && !msg.deleted;
+                if(!canEdit && !canDeleteSelf && !canDeleteDG) return;
+
+                // Calculer position
+                var rect = event.currentTarget ? event.currentTarget.getBoundingClientRect() : {x:100,y:200};
+                var x = Math.min(rect.left, window.innerWidth - 220);
+                var y = rect.top - 10;
+                this.ctxMenu = { msgId:msg.id, msg, x, y, canEdit, canDeleteSelf, canDeleteDG };
+                event.preventDefault();
+            },
+
+            withinTwoMin(ts){
+                if(!ts) return false;
+                var d = ts.toDate ? ts.toDate() : new Date(ts);
+                return (Date.now() - d.getTime()) < 120000; // 2 minutes
+            },
+
+            startLongPress(msg, event){
+                var self=this;
+                this.ctxLongPressTimer = setTimeout(function(){
+                    self.onMsgLongPress(msg, event);
+                }, 600);
+            },
+            cancelLongPress(){
+                if(this.ctxLongPressTimer){ clearTimeout(this.ctxLongPressTimer); this.ctxLongPressTimer=null; }
+            },
+
+            // ── Modifier un message texte ──
+            startEdit(msg){
+                this.editingMsgId = msg.id;
+                this.editingText = msg.text;
+                this.ctxMenu = null;
+                this.$nextTick(()=>{ var el=document.getElementById('edit-input-'+msg.id); if(el) el.focus(); });
+            },
+            cancelEdit(){ this.editingMsgId=null; this.editingText=''; },
+            async confirmEdit(msg){
+                var newText = this.editingText.trim();
+                if(!newText) return;
+                if(newText===msg.text){ this.cancelEdit(); return; }
+                try{
+                    await db.collection('messages').doc(this.getConvId()).collection('msgs').doc(msg.id).update({
+                        text: newText,
+                        edited: true,
+                        editedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        _requester: this.phoneInput
+                    });
+                    this.cancelEdit();
+                    this.showToast('Message modifié');
+                }catch(e){ console.error(e); alert('Impossible de modifier.'); }
+            },
+
+            // ── Supprimer un message ──
+            async deleteMsg(msg, forEveryone){
+                this.ctxMenu = null;
+                var convId = this.getConvId();
+                var ref = db.collection('messages').doc(convId).collection('msgs').doc(msg.id);
+                try{
+                    if(forEveryone || this.isAdmin){
+                        // Marquer comme supprimé pour tous
+                        await ref.update({
+                            deleted: true,
+                            deletedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                            _requester: this.phoneInput
+                        });
+                    } else {
+                        // Pour moi seulement — masqué localement (on met un flag)
+                        await ref.update({
+                            deleted: true,
+                            deletedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                            _requester: this.phoneInput
+                        });
+                    }
+                    this.showToast('Message supprimé');
+                }catch(e){ console.error(e); alert('Impossible de supprimer.'); }
+            },
+
+            // ══════════════════════════════════════════════
+            //  MESSAGES — vocal
             // ══════════════════════════════════════════════
             mediaRec:null, recChunks:[], isRecording:false,
 
@@ -368,7 +552,7 @@
             },
 
             // ══════════════════════════════════════════════
-            //  MESSAGES — fichiers (photo, vidéo, doc)
+            //  MESSAGES — fichiers
             // ══════════════════════════════════════════════
             triggerFile(accept){
                 var inp=document.createElement('input');
@@ -396,14 +580,31 @@
             },
 
             // ══════════════════════════════════════════════
-            //  MESSAGES — listener temps réel
+            //  MESSAGES — listener temps réel + notifications
             // ══════════════════════════════════════════════
+            _lastMsgCount: 0,
+
             listenMessages(){
                 var self=this;
+                this._lastMsgCount = 0;
                 this.unsubMessages=db.collection('messages').doc(this.getConvId())
                     .collection('msgs').orderBy('timestamp','asc')
                     .onSnapshot(snap=>{
-                        self.messages=snap.docs.map(d=>Object.assign({id:d.id},d.data()));
+                        var all=snap.docs.map(d=>Object.assign({id:d.id},d.data()));
+                        self.messages=all;
+                        // Notification sur nouveau message reçu
+                        if(all.length > self._lastMsgCount && self._lastMsgCount > 0){
+                            var newest = all[all.length-1];
+                            if(newest && newest.senderId !== self.phoneInput && !newest.deleted){
+                                var body = newest.type==='text' ? (newest.text||'').substring(0,80)
+                                         : newest.type==='image' ? '📷 Photo'
+                                         : newest.type==='video' ? '🎬 Vidéo'
+                                         : newest.type==='audio'||newest.type==='voice' ? '🎤 Vocal'
+                                         : '📎 Fichier';
+                                showLocalNotif(newest.senderName||'Nouveau message', body);
+                            }
+                        }
+                        self._lastMsgCount = all.length;
                         self.$nextTick(()=>{var el=document.getElementById('msgs');if(el)el.scrollTop=el.scrollHeight;});
                     });
             },
@@ -413,8 +614,7 @@
             },
 
             // ══════════════════════════════════════════════
-            //  APPELS WEBRTC (audio + vidéo)
-            //  Signaling via Firestore collection "calls"
+            //  APPELS WEBRTC
             // ══════════════════════════════════════════════
             iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}],
 
@@ -474,7 +674,6 @@
                 }catch(e){console.error(e);alert('Impossible de démarrer l\'appel.');this.hangUp();}
             },
 
-            // Écoute les appels entrants (à appeler après login)
             listenIncomingCalls(){
                 var self=this;
                 db.collection('calls')
@@ -490,6 +689,10 @@
                                 self.callState='incoming';
                                 self.callType=data.type;
                                 self.callTarget={id:ch.doc.id,...data};
+                                showLocalNotif(
+                                    (data.callerName||'Appel entrant'),
+                                    data.type==='video'?'📹 Appel vidéo':'📞 Appel audio'
+                                );
                             }
                         });
                     });
@@ -561,8 +764,95 @@
         };}
     </script>
     <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+    <style>
+        /* ── Context menu ── */
+        .ctx-menu {
+            position: fixed;
+            z-index: 9999;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+            overflow: hidden;
+            min-width: 200px;
+            border: 1px solid rgba(0,0,0,0.06);
+            animation: fadeInUp 0.15s ease-out;
+        }
+        .ctx-menu button {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            padding: 13px 18px;
+            font-size: 14px;
+            font-weight: 700;
+            text-align: left;
+            background: none;
+            border: none;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .ctx-menu button:hover { background: #f5f7fa; }
+        .ctx-menu button.danger { color: #ef4444; }
+        .ctx-menu button.danger:hover { background: #fef2f2; }
+        .ctx-menu .ctx-sep { height: 1px; background: #f1f5f9; margin: 2px 0; }
+
+        /* ── Message supprimé ── */
+        .msg-deleted {
+            opacity: 0.5;
+            font-style: italic;
+        }
+
+        /* ── Indicateur édité ── */
+        .edited-badge {
+            font-size: 9px;
+            opacity: 0.6;
+            margin-left: 4px;
+        }
+
+        /* ── Fix layout discussion — plein écran correct ── */
+        .chat-main-area {
+            min-width: 0;
+            max-width: 100%;
+            width: 100%;
+        }
+    </style>
 </head>
 <body class="bg-gray-100 text-gray-900 antialiased" x-data="welloApp()" x-init="init()">
+
+<!-- ═══════════ TOAST ═══════════ -->
+<template x-if="toastMsg">
+<div class="toast" x-text="toastMsg" style="z-index:99999"></div>
+</template>
+
+<!-- ═══════════ CONTEXT MENU (appui long) ═══════════ -->
+<template x-if="ctxMenu">
+<div class="ctx-menu" :style="'top:'+ctxMenu.y+'px;left:'+ctxMenu.x+'px'">
+    <template x-if="ctxMenu.canEdit">
+        <button @click="startEdit(ctxMenu.msg)">
+            <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            Modifier
+        </button>
+    </template>
+    <template x-if="ctxMenu.canDeleteSelf || ctxMenu.canDeleteDG">
+        <div class="ctx-sep"></div>
+    </template>
+    <template x-if="ctxMenu.canDeleteSelf">
+        <button class="danger" @click="deleteMsg(ctxMenu.msg, true)">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            Supprimer pour tous
+        </button>
+    </template>
+    <template x-if="ctxMenu.canDeleteDG && !ctxMenu.canDeleteSelf">
+        <button class="danger" @click="deleteMsg(ctxMenu.msg, true)">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            Supprimer (DG)
+        </button>
+    </template>
+    <div class="ctx-sep"></div>
+    <button @click="ctxMenu=null" style="color:#9ca3af;font-size:13px">Annuler</button>
+</div>
+</template>
 
 <!-- ═══════════ 1. CONNEXION ═══════════ -->
 <template x-if="!isLoggedIn">
@@ -591,10 +881,10 @@
 
 <!-- ═══════════ 2. INTERFACE PRINCIPALE ═══════════ -->
 <template x-if="isLoggedIn">
-<div class="flex h-screen w-full overflow-hidden bg-white xl:max-w-7xl xl:mx-auto xl:my-6 xl:h-[95vh] xl:rounded-3xl border border-gray-100 shadow-2xl">
+<div class="flex h-screen w-full overflow-hidden bg-white xl:max-w-7xl xl:mx-auto xl:my-6 xl:h-[95vh] xl:rounded-3xl border border-gray-100 shadow-2xl" style="max-width:100vw;">
 
     <!-- SIDEBAR -->
-    <aside class="w-full lg:w-[400px] flex flex-col border-r border-gray-100"
+    <aside class="w-full lg:w-[360px] lg:min-w-[320px] lg:max-w-[400px] flex flex-col border-r border-gray-100 flex-shrink-0"
            :class="activeChat ? 'hidden lg:flex' : 'flex'">
         <header class="p-4 bg-white">
             <div class="flex justify-between items-center mb-4">
@@ -675,11 +965,9 @@
                             <p class="text-[10px] text-orange-500 font-bold uppercase tracking-widest"
                                x-text="(group.members||[]).length + ' membre(s)'"></p>
                         </div>
-                        <!-- Bouton supprimer (DG seulement) -->
                         <template x-if="isAdmin">
                             <button @click="confirmDeleteGroup(group,$event)"
-                                    class="ml-2 p-2 rounded-full text-gray-300 hover:bg-red-50 hover:text-red-500 transition flex-shrink-0"
-                                    title="Supprimer le groupe">
+                                    class="ml-2 p-2 rounded-full text-gray-300 hover:bg-red-50 hover:text-red-500 transition flex-shrink-0">
                                 <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                             </button>
                         </template>
@@ -723,50 +1011,46 @@
         </nav>
     </aside>
 
-    <!-- ZONE DISCUSSION -->
-    <main class="flex-1 flex flex-col bg-gray-50" :class="activeChat?'flex':'hidden lg:flex'">
+    <!-- ZONE DISCUSSION — full width, no overflow -->
+    <main class="chat-main-area flex-1 flex flex-col bg-gray-50 overflow-hidden" :class="activeChat?'flex':'hidden lg:flex'">
         <template x-if="activeChat">
-        <div class="flex flex-col h-full bg-white">
+        <div class="flex flex-col h-full w-full bg-white overflow-hidden">
 
             <!-- Header du chat -->
-            <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between bg-white shadow-sm min-h-[68px]">
-                <div class="flex items-center">
-                    <button @click="activeChat=null" class="lg:hidden mr-3 text-gray-400">
+            <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between bg-white shadow-sm flex-shrink-0" style="min-height:64px">
+                <div class="flex items-center min-w-0">
+                    <button @click="activeChat=null" class="lg:hidden mr-3 text-gray-400 flex-shrink-0">
                         <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
                     </button>
-                    <div class="h-10 w-10 rounded-full bg-[#004aad] flex items-center justify-center text-white font-bold text-sm"
+                    <div class="h-10 w-10 rounded-full bg-[#004aad] flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
                          x-text="initiales(activeChat.name)"></div>
-                    <div class="ml-3">
-                        <h4 class="font-bold text-gray-950" x-text="activeChat.name"></h4>
+                    <div class="ml-3 min-w-0">
+                        <h4 class="font-bold text-gray-950 truncate" x-text="activeChat.name"></h4>
                         <p class="text-[10px] text-green-500 font-bold uppercase tracking-widest">Connecté</p>
                     </div>
                 </div>
-                <!-- Actions header : gérer membres + appels -->
-                <div class="flex items-center space-x-2">
-                    <!-- Appel audio -->
+                <div class="flex items-center space-x-1 flex-shrink-0">
                     <button @click="startCall('audio')"
-                            class="p-2.5 rounded-full hover:bg-gray-100 text-[#004aad] transition" title="Appel audio">
+                            class="p-2.5 rounded-full hover:bg-gray-100 text-[#004aad] transition">
                         <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/></svg>
                     </button>
-                    <!-- Appel vidéo -->
                     <button @click="startCall('video')"
-                            class="p-2.5 rounded-full hover:bg-gray-100 text-[#004aad] transition" title="Appel vidéo">
+                            class="p-2.5 rounded-full hover:bg-gray-100 text-[#004aad] transition">
                         <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.868v6.264a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
                     </button>
-                    <!-- Gérer membres groupe (DG) -->
                     <template x-if="isAdmin && activeChat.members !== undefined">
                         <button @click="showManageMembers=true"
-                                class="p-2.5 rounded-full hover:bg-gray-100 text-[#004aad] transition" title="Gérer les membres">
+                                class="p-2.5 rounded-full hover:bg-gray-100 text-[#004aad] transition">
                             <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
                         </button>
                     </template>
                 </div>
             </div>
 
-            <!-- Zone messages -->
-            <div id="msgs" class="flex-1 bg-gray-50 p-4 overflow-y-auto flex flex-col">
+            <!-- Zone messages — scroll interne seulement -->
+            <div id="msgs" class="flex-1 bg-gray-50 p-3 overflow-y-auto overflow-x-hidden" style="overscroll-behavior:contain;">
                 <template x-if="messages.length===0">
-                    <div class="flex-1 flex items-center justify-center">
+                    <div class="flex-1 flex items-center justify-center h-full">
                         <div class="p-6 bg-white rounded-3xl shadow-sm max-w-xs text-center">
                             <p class="text-gray-400 text-sm italic">Début de la discussion avec
                                 <span class="font-bold text-[#004aad]" x-text="activeChat.name"></span>.
@@ -774,61 +1058,100 @@
                         </div>
                     </div>
                 </template>
+
                 <template x-for="msg in messages" :key="msg.id">
-                    <div class="mb-3 flex" :class="msg.senderId===phoneInput?'justify-end':'justify-start'">
-                        <!-- Nom expéditeur (groupes, messages reçus) -->
-                        <div class="max-w-[75%]">
+                    <!-- Wrapper pour appui long -->
+                    <div class="mb-2 flex select-none"
+                         :class="msg.senderId===phoneInput?'justify-end':'justify-start'"
+                         @mousedown.prevent="startLongPress(msg,$event)"
+                         @touchstart.prevent="startLongPress(msg,$event)"
+                         @mouseup="cancelLongPress()"
+                         @touchend="cancelLongPress()"
+                         @mousemove="cancelLongPress()"
+                         @touchmove="cancelLongPress()"
+                         @contextmenu.prevent="onMsgLongPress(msg,$event)">
+
+                        <div style="max-width:78%;min-width:60px;">
+                            <!-- Nom expéditeur (groupes, messages reçus) -->
                             <template x-if="msg.senderId!==phoneInput && activeChat.members!==undefined">
                                 <p class="text-[9px] font-bold text-[#004aad] mb-1 px-1" x-text="msg.senderName"></p>
                             </template>
-                            <div class="px-4 py-3 rounded-2xl shadow-sm text-sm"
-                                 :class="msg.senderId===phoneInput?'bg-[#004aad] text-white rounded-br-none':'bg-white text-gray-800 rounded-bl-none'">
-                                <!-- TEXT -->
-                                <template x-if="msg.type==='text'||!msg.type">
-                                    <p x-text="msg.text"></p>
-                                </template>
-                                <!-- IMAGE -->
-                                <template x-if="msg.type==='image'">
-                                    <img :src="msg.url" class="max-w-full rounded-xl cursor-pointer" @click="window.open(msg.url,'_blank')" style="max-height:220px;object-fit:cover;">
-                                </template>
-                                <!-- VIDEO -->
-                                <template x-if="msg.type==='video'">
-                                    <video :src="msg.url" controls class="max-w-full rounded-xl" style="max-height:220px;"></video>
-                                </template>
-                                <!-- AUDIO / VOCAL -->
-                                <template x-if="msg.type==='audio'||msg.type==='voice'">
-                                    <div class="flex items-center space-x-2 min-w-[180px]">
-                                        <svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
-                                        <audio :src="msg.url" controls class="h-8 w-full" style="min-width:140px;"></audio>
-                                    </div>
-                                </template>
-                                <!-- FICHIER -->
-                                <template x-if="msg.type==='file'">
-                                    <a :href="msg.url" target="_blank" class="flex items-center space-x-2 hover:opacity-80">
-                                        <svg class="h-6 w-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                                        <div>
-                                            <p class="font-bold text-xs truncate max-w-[160px]" x-text="msg.fileName||'Fichier'"></p>
-                                            <p class="text-[9px] opacity-70" x-text="humanSize(msg.fileSize||0)"></p>
+
+                            <!-- Message supprimé -->
+                            <template x-if="msg.deleted">
+                                <div class="px-4 py-2 rounded-2xl text-sm msg-deleted"
+                                     :class="msg.senderId===phoneInput?'bg-[#004aad]/30 text-white':'bg-white text-gray-400'">
+                                    🚫 Ce message a été supprimé
+                                </div>
+                            </template>
+
+                            <!-- Message en cours d'édition -->
+                            <template x-if="!msg.deleted && editingMsgId===msg.id">
+                                <div class="flex items-center space-x-2">
+                                    <input :id="'edit-input-'+msg.id" type="text" x-model="editingText"
+                                           @keyup.enter="confirmEdit(msg)" @keyup.escape="cancelEdit()"
+                                           class="flex-1 px-3 py-2 rounded-xl border-2 border-[#004aad] text-sm font-medium outline-none" style="min-width:120px;">
+                                    <button @click="confirmEdit(msg)" class="p-2 bg-[#004aad] text-white rounded-xl text-xs font-bold">✓</button>
+                                    <button @click="cancelEdit()" class="p-2 bg-gray-100 text-gray-500 rounded-xl text-xs font-bold">✗</button>
+                                </div>
+                            </template>
+
+                            <!-- Message normal -->
+                            <template x-if="!msg.deleted && editingMsgId!==msg.id">
+                                <div class="px-4 py-3 rounded-2xl shadow-sm text-sm"
+                                     :class="msg.senderId===phoneInput?'bg-[#004aad] text-white rounded-br-none':'bg-white text-gray-800 rounded-bl-none'">
+                                    <!-- TEXT -->
+                                    <template x-if="msg.type==='text'||!msg.type">
+                                        <p x-text="msg.text" style="word-break:break-word;"></p>
+                                    </template>
+                                    <!-- IMAGE -->
+                                    <template x-if="msg.type==='image'">
+                                        <img :src="msg.url" class="rounded-xl cursor-pointer w-full" @click="window.open(msg.url,'_blank')" style="max-height:200px;object-fit:cover;">
+                                    </template>
+                                    <!-- VIDEO -->
+                                    <template x-if="msg.type==='video'">
+                                        <video :src="msg.url" controls class="rounded-xl w-full" style="max-height:200px;"></video>
+                                    </template>
+                                    <!-- AUDIO / VOCAL -->
+                                    <template x-if="msg.type==='audio'||msg.type==='voice'">
+                                        <div class="flex items-center space-x-2" style="min-width:160px;">
+                                            <svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
+                                            <audio :src="msg.url" controls class="h-8 flex-1" style="min-width:120px;"></audio>
                                         </div>
-                                    </a>
-                                </template>
-                                <p class="text-[9px] mt-1 opacity-60 text-right" x-text="formatTime(msg.timestamp)"></p>
-                            </div>
+                                    </template>
+                                    <!-- FICHIER -->
+                                    <template x-if="msg.type==='file'">
+                                        <a :href="msg.url" target="_blank" class="flex items-center space-x-2 hover:opacity-80">
+                                            <svg class="h-6 w-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                                            <div class="min-w-0">
+                                                <p class="font-bold text-xs truncate" x-text="msg.fileName||'Fichier'"></p>
+                                                <p class="text-[9px] opacity-70" x-text="humanSize(msg.fileSize||0)"></p>
+                                            </div>
+                                        </a>
+                                    </template>
+                                    <!-- Horodatage + badge édité -->
+                                    <div class="flex items-center justify-end space-x-1 mt-1">
+                                        <template x-if="msg.edited">
+                                            <span class="edited-badge">modifié</span>
+                                        </template>
+                                        <p class="text-[9px] opacity-60" x-text="formatTime(msg.timestamp)"></p>
+                                    </div>
+                                </div>
+                            </template>
                         </div>
                     </div>
                 </template>
             </div>
 
             <!-- Barre upload progress -->
-            <div x-show="uploadProgress>0" class="px-4 pb-0">
+            <div x-show="uploadProgress>0" class="px-4 flex-shrink-0">
                 <div class="h-1 bg-gray-100 rounded-full overflow-hidden">
                     <div class="h-full bg-orange-500 transition-all" :style="'width:'+uploadProgress+'%'"></div>
                 </div>
             </div>
 
             <!-- Barre saisie -->
-            <div class="p-3 bg-white border-t border-gray-100">
-                <!-- Bouton vocal maintenu -->
+            <div class="p-3 bg-white border-t border-gray-100 flex-shrink-0">
                 <div x-show="isRecording" class="flex items-center justify-center space-x-4 py-2 bg-red-50 rounded-2xl mb-2">
                     <div class="h-3 w-3 bg-red-500 rounded-full animate-pulse"></div>
                     <span class="text-red-600 font-bold text-sm">Enregistrement...</span>
@@ -836,7 +1159,7 @@
                 </div>
                 <div x-show="!isRecording" class="flex items-center space-x-2">
                     <!-- Pièce jointe -->
-                    <div class="relative" x-data="{open:false}">
+                    <div class="relative flex-shrink-0" x-data="{open:false}">
                         <button @click="open=!open" class="p-3 rounded-full hover:bg-gray-100 text-gray-400 transition">
                             <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
                         </button>
@@ -852,6 +1175,11 @@
                                 <svg class="h-4 w-4 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.868v6.264a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
                                 <span>Vidéo</span>
                             </button>
+                            <button @click="triggerFile('audio/*');open=false"
+                                    class="w-full text-left px-3 py-2.5 hover:bg-gray-50 rounded-xl text-sm font-bold flex items-center space-x-2">
+                                <svg class="h-4 w-4 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/></svg>
+                                <span>Audio</span>
+                            </button>
                             <button @click="triggerFile('*/*');open=false"
                                     class="w-full text-left px-3 py-2.5 hover:bg-gray-50 rounded-xl text-sm font-bold flex items-center space-x-2">
                                 <svg class="h-4 w-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
@@ -860,18 +1188,19 @@
                         </div>
                     </div>
                     <!-- Champ texte -->
-                    <div class="flex-1 flex items-center bg-gray-50 rounded-2xl px-4 py-2">
+                    <div class="flex-1 flex items-center bg-gray-50 rounded-2xl px-4 py-2 min-w-0">
                         <input type="text" x-model="newMessage" @keyup.enter="sendMessage()"
                                placeholder="Écrivez un message..."
-                               class="flex-1 bg-transparent outline-none font-medium text-sm">
+                               class="flex-1 bg-transparent outline-none font-medium text-sm min-w-0">
                     </div>
-                    <!-- Micro (maintenir pour vocal) -->
+                    <!-- Micro -->
                     <button @mousedown="startVoice()" @touchstart.prevent="startVoice()"
-                            class="p-3 rounded-full hover:bg-gray-100 text-gray-400 transition" title="Maintenir pour enregistrer">
+                            @mouseup="stopVoice()" @touchend="stopVoice()"
+                            class="p-3 rounded-full hover:bg-gray-100 text-gray-400 transition flex-shrink-0">
                         <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
                     </button>
                     <!-- Envoyer -->
-                    <button @click="sendMessage()" class="p-3 bg-[#004aad] text-white rounded-xl shadow hover:bg-blue-700 transition">
+                    <button @click="sendMessage()" class="p-3 bg-[#004aad] text-white rounded-xl shadow hover:bg-blue-700 transition flex-shrink-0">
                         <svg class="h-5 w-5 rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
                     </button>
                 </div>
@@ -891,17 +1220,14 @@
 
 <!-- ═══════════ MODALES ═══════════ -->
 
-<!-- Appel sortant -->
+<!-- Appel sortant / actif -->
 <template x-if="callState==='outgoing'||callState==='active'">
 <div class="fixed inset-0 z-[200] flex flex-col bg-[#004aad]">
-    <!-- Vidéo distante plein écran -->
     <video id="remote-video" autoplay playsinline class="absolute inset-0 w-full h-full object-cover"
            x-show="callType==='video'"></video>
-    <!-- Vidéo locale petite -->
     <video id="local-video" autoplay playsinline muted
            class="absolute top-4 right-4 w-32 h-44 rounded-2xl object-cover shadow-2xl border-2 border-white/30 z-10"
            x-show="callType==='video'"></video>
-    <!-- Overlay info (quand pas encore connecté ou audio) -->
     <div class="relative z-10 flex-1 flex flex-col items-center justify-center text-white p-8"
          :class="callType==='video'&&callState==='active'?'opacity-0 hover:opacity-100 transition':''">
         <div class="h-24 w-24 rounded-full bg-white/20 flex items-center justify-center text-3xl font-black mb-6"
@@ -910,7 +1236,6 @@
         <p class="text-white/70 font-medium" x-text="callState==='outgoing'?'Appel en cours...':'En communication'"></p>
         <p class="text-sm text-white/50 mt-1" x-text="callType==='video'?'Appel vidéo':'Appel audio'"></p>
     </div>
-    <!-- Boutons bas -->
     <div class="relative z-10 flex justify-center space-x-8 pb-16 pt-6">
         <button @click="hangUp()"
                 class="h-16 w-16 rounded-full bg-red-500 flex items-center justify-center shadow-2xl active:scale-90 transition">
@@ -1023,7 +1348,6 @@
 <template x-if="showInviteModal">
 <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
     <div class="bg-white w-full max-w-md rounded-[40px] p-8 shadow-2xl max-h-[92vh] overflow-y-auto">
-        <!-- ÉTAPE 1 -->
         <div x-show="inviteStep===1">
             <div class="flex items-center justify-between mb-6">
                 <h3 class="text-xl font-black text-[#004aad] uppercase tracking-tighter">Nouvel Accès</h3>
@@ -1072,7 +1396,6 @@
                 </button>
             </div>
         </div>
-        <!-- ÉTAPE 2 -->
         <div x-show="inviteStep===2" class="text-center">
             <div class="h-16 w-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
                 <svg class="h-8 w-8 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
@@ -1096,6 +1419,7 @@
     </div>
 </div>
 </template>
+
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
