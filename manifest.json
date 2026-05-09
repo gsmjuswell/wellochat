@@ -1,0 +1,52 @@
+{
+  "name": "Wello Chat by GSM Juswell",
+  "short_name": "Wello Chat",
+  "description": "Messagerie professionnelle GSM Juswell — chat, groupes et appels vidéo.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#004aad",
+  "theme_color": "#004aad",
+  "lang": "fr",
+  "categories": ["business", "communication", "productivity"],
+
+  "icons": [
+    {
+      "src": "/favicon-96x96.png",
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/web-app-manifest-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/web-app-manifest-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+
+  "shortcuts": [
+    {
+      "name": "Ouvrir le chat",
+      "short_name": "Chat",
+      "description": "Accéder directement à la messagerie",
+      "url": "/?tab=chats",
+      "icons": [{ "src": "/favicon-96x96.png", "sizes": "96x96" }]
+    }
+  ],
+
+  "prefer_related_applications": false
+}
